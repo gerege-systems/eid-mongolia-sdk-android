@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # Vendored golden = golden/SOURCE-ийн Go tag (байт-ижил)
+      - name: Golden vectors match Go reference tag
+        run: bash scripts/sync-pades-golden.sh --check
+      - name: JVM unit + golden tests
+        run: ./gradlew :pades:testDebugUnitTest --no-daemon --console=plain
+      # JitPack-ийн build-ийг давтана (publication эвдрэхгүй байх)
+      - name: publishToMavenLocal
+        run: ./gradlew :pades:publishToMavenLocal --no-daemon --console=plain
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: pades/build/test-results/

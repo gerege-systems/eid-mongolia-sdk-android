@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- complete(): RFC 3161 TSA + OCSP/CRL (LTV) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
