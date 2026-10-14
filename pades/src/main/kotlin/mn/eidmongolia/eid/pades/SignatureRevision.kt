@@ -18,8 +18,13 @@ internal object SignatureRevision {
 
     class PlaceholderOverflow(msg: String) : Exception(msg)
 
-    /** Invisible approval signature revision: Sig dict + placeholder, widget on the first page, new Catalog/AcroForm. */
-    fun prepare(base: ByteArray, signingTime: Date, signerName: String, reason: String?): Prepared {
+    /**
+     * Approval signature revision: Sig dict + placeholder, widget, new Catalog/AcroForm. Without [vis] the widget is
+     * invisible on the first page; with [vis] (APPEARANCE_SPEC.md) it has a /Rect on page [Appearance.Visible.page], /F 4
+     * and an /AP /N form XObject (+ 2 fonts), appended to that page's /Annots. [Appearance.Visible.name] must equal the
+     * written /Name, else [AppearanceException].
+     */
+    fun prepare(base: ByteArray, signingTime: Date, signerName: String, reason: String?, vis: Appearance.Visible? = null): Prepared {
         val inc = Incremental(base)
         val rd = inc.reader
         val root = inc.root
@@ -41,6 +46,7 @@ internal object SignatureRevision {
         val sigId = inc.reserve()
         val fieldId = inc.reserve()
         val catId = inc.reserve()
+        val apIds = if (vis != null) IntArray(11) { inc.reserve() } else IntArray(0) // form, F1 ×5, F2 ×5
 
         // ── Sig dict (placeholder) ──
         val sig = StringBuilder("<<\n /Type /Sig\n /Filter /Adobe.PPKLite\n /SubFilter /$SUB_FILTER\n /ByteRange ")
@@ -55,12 +61,26 @@ internal object SignatureRevision {
         sig.append("\n>>")
         val sigStart = inc.writeObject(sigId, sig.toString().toByteArray(Charsets.ISO_8859_1))
 
-        // ── field + invisible widget ──
-        val fld = StringBuilder("<<\n  /Type /Annot\n  /Subtype /Widget\n  /Rect [0 0 0 0]\n")
-        val page = firstPage(rd, root["Pages"], rd.trailer["Root"].ref, 0)
-        page?.let { fld.append("  /P ${it.second.id} ${it.second.gen} R\n") }
-        fld.append("  /F 132\n  /FT /Sig\n  /T ($fieldName)\n  /V $sigId 0 R\n>>")
-        inc.writeObject(fieldId, fld.toString().toByteArray(Charsets.ISO_8859_1))
+        // ── field + widget ──
+        val page: Pair<PdfDict, PdfRef>?
+        if (vis == null) {
+            // Invisible (digitorus createVisualSignature, invisible): first page.
+            val fld = StringBuilder("<<\n  /Type /Annot\n  /Subtype /Widget\n  /Rect [0 0 0 0]\n")
+            page = firstPage(rd, root["Pages"], rd.trailer["Root"].ref, 0)
+            page?.let { fld.append("  /P ${it.second.id} ${it.second.gen} R\n") }
+            fld.append("  /F 132\n  /FT /Sig\n  /T ($fieldName)\n  /V $sigId 0 R\n>>")
+            inc.writeObject(fieldId, fld.toString().toByteArray(Charsets.ISO_8859_1))
+        } else {
+            if (sigText(signerName, 120) == null || GoText.trimSpace(signerName) != vis.name) throw AppearanceException("name cannot be written to /Name")
+            page = Appearance.nthPage(rd, root["Pages"], rd.trailer["Root"].ref, vis.page) ?: throw AppearanceException("page ${vis.page} missing")
+            val g = Appearance.geometry(rd, page.first)
+            val rect = Appearance.rect(g.box, g.rot, vis.x, vis.y, vis.w, vis.h)
+            val bodies = Appearance.objects(
+                Appearance.Params(vis.w.toInt(), vis.h.toInt(), g.rot, vis.name, vis.role, vis.lang, vis.date, vis.url), apIds,
+            )
+            inc.writeObject(fieldId, Appearance.widget(fieldName, rect, page.second, sigId, apIds[0]))
+            bodies.forEachIndexed { i, b -> inc.writeObject(apIds[i], b) }
+        }
         page?.let { addWidgetToPage(inc, it.first, it.second, fieldId) }
 
         // ── new Catalog ──

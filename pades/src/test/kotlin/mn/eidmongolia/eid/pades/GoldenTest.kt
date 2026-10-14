@@ -61,6 +61,12 @@ class GoldenTest {
                 claimedRole = p.optString("claimedRole").ifEmpty { null }, docId = p.optString("docId").ifEmpty { null },
                 verifyPage = p.optBoolean("verifyPage", false), fileName = p.optString("fileName").ifEmpty { null },
                 lang = p.optString("lang").ifEmpty { null },
+                appearance = p.optJSONObject("appearance")?.let {
+                    SignatureAppearance(
+                        page = it.optInt("page", 0), x = it.getDouble("x"), y = it.getDouble("y"),
+                        width = it.getDouble("width"), height = it.getDouble("height"), lang = it.optString("lang").ifEmpty { null },
+                    )
+                },
             )
             val want = e.optString("error").ifEmpty { null }
             val prep = try {
@@ -91,6 +97,12 @@ class GoldenTest {
             assertEquals("$name pageSha256", e.optString("pageSha256").ifEmpty { null }, res.pageSha256)
             val prior = e.optJSONArray("priorCmsSha256")
             assertEquals("$name priorCmsSha256", (0 until (prior?.length() ?: 0)).map { prior!!.getString(it) }, res.priorCmsSha256)
+            // Each prior signature's revision hash = its own sigRevSha256 (inputs "case:<prev>" carry one prior signature).
+            val prev = c.getString("input").takeIf { it.startsWith("case:") }?.removePrefix("case:")
+            val wantPriorRev = prev?.let { pn ->
+                listOf((0 until cases.length()).map { cases.getJSONObject(it) }.single { it.getString("name") == pn }.getJSONObject("expect").getString("sigRevSha256"))
+            } ?: emptyList()
+            assertEquals("$name priorRevisionSha256", wantPriorRev, res.priorRevisionSha256)
             assertEquals("$name outSha256", e.getString("outSha256"), res.outSha256)
             outputs[name] = res.pdf
             completed++
@@ -98,6 +110,16 @@ class GoldenTest {
         val okCases = (0 until cases.length()).count { cases.getJSONObject(it).getJSONObject("expect").optString("error").isEmpty() }
         assertTrue("no complete case ran", okCases > 0)
         assertEquals("completed cases", okCases, completed)
+
+        // Visible signature on a signed document without a verify page (no docId) → REQUEST_INVALID (verify URL needs it).
+        val noPage = outputs["quartz-pdf13-nopage"] ?: error("quartz-pdf13-nopage output")
+        val vis = SignatureAppearance(x = 36.0, y = 36.0, width = 220.0, height = 64.0)
+        try {
+            Pades.prepare(noPage, PrepareOptions(signerCert = citizen, chain = chain, signingTime = signingTime, appearance = vis))
+            fail("visible without docId: expected REQUEST_INVALID")
+        } catch (x: EidPadesException) {
+            assertEquals("visible without docId", "REQUEST_INVALID", x.code)
+        }
     }
 
     @Test

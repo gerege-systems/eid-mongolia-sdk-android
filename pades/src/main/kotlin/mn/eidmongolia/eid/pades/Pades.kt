@@ -35,6 +35,7 @@ internal object Pades {
             throw EidPadesException.RequestInvalid("docId must be a lowercase UUID")
         }
         if (o.lang != null && o.lang.isNotEmpty() && o.lang != "mn" && o.lang != "en") throw EidPadesException.RequestInvalid("lang: mn | en")
+        checkAppearance(o)
         val now = o.signingTime ?: Date()
         val inHex = Hex.encode(Cms.sha256(doc))
         val pre = Precheck.run(doc, EidChain.issuers + chain[0])
@@ -67,8 +68,11 @@ internal object Pades {
             pageHex = Hex.encode(Cms.sha256(base))
         }
         val name = o.signerName?.takeIf { GoText.trimSpace(it).isNotEmpty() } ?: cert.displayName
+        val vis = if (o.appearance != null) visibleSpec(doc, o, name, now, docId ?: "", pre.revIndex) else null
         val prep = try {
-            SignatureRevision.prepare(base, now, name, o.reason)
+            SignatureRevision.prepare(base, now, name, o.reason, vis)
+        } catch (e: AppearanceException) {
+            throw EidPadesException.RequestInvalid("appearance: ${e.message}")
         } catch (e: Exception) {
             throw EidPadesException.PdfInvalid("cannot write the signature revision: ${e.message}")
         }
@@ -127,10 +131,51 @@ internal object Pades {
             throw EidPadesException.SelfValidationFailed("DSS revision: ${e.message}")
         }
         if (out.size > MAX_OUTPUT_BYTES) throw EidPadesException.PdfTooLarge("output larger than 10 MiB")
+        val priorRev = try {
+            Precheck.priorRevisionSha256(signed, st.byteRange)
+        } catch (e: Exception) {
+            throw EidPadesException.SelfValidationFailed("prior revisions: ${e.message}")
+        }
         return Completed(
             pdf = out, cms = cms, docId = st.docId, outSha256 = Hex.encode(Cms.sha256(out)), inSha256 = st.inSha256,
             hasPage = st.hasPage, pageSha256 = st.pageSha256, signerCert = cert.raw, revIndex = st.revIndex,
             sigRevSha256 = Hex.encode(Cms.sha256(signed)), priorCmsSha256 = st.priorCmsSha256,
+            priorRevisionSha256 = priorRev,
+        )
+    }
+
+    /** Appearance checks independent of the PDF (Go checkAppearance, APPEARANCE_SPEC.md §1). */
+    private fun checkAppearance(o: PrepareOptions) {
+        val a = o.appearance ?: return
+        fun bad(msg: String) = EidPadesException.RequestInvalid("appearance: $msg")
+        for (v in doubleArrayOf(a.x, a.y, a.width, a.height)) if (!v.isFinite() || v < 0 || v > 14400) throw bad("x, y, width, height must be 0…14400 pt")
+        if (a.page < 0) throw bad("page ≥ 0")
+        if (a.lang != null && a.lang.isNotEmpty() && a.lang != "mn" && a.lang != "en") throw bad("lang: mn | en")
+        val role = o.claimedRole ?: ""
+        var i = 0
+        while (i < role.length) {
+            val r = role.codePointAt(i)
+            val t = Character.getType(r)
+            // Go roleText: no Cc/Cf, valid UTF-8 (a lone surrogate cannot be encoded).
+            if (t == Character.CONTROL.toInt() || t == Character.FORMAT.toInt() || t == Character.SURROGATE.toInt()) throw bad("control character in claimedRole")
+            i += Character.charCount(r)
+        }
+    }
+
+    /** Go visibleSpec: page (0 → the input's last), h100, language, date (+08), verify URL. */
+    private fun visibleSpec(doc: ByteArray, o: PrepareOptions, name: String, now: Date, docId: String, revIndex: Int): Appearance.Visible {
+        val a = o.appearance!!
+        if (docId.isEmpty()) throw EidPadesException.RequestInvalid("appearance: docId required (document has no verify page)")
+        val n = try { Appearance.pageCount(doc) } catch (e: Exception) { throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}") }
+        val page = if (a.page == 0) n else a.page
+        if (page > n) throw EidPadesException.RequestInvalid("appearance: page $page > page count $n")
+        val df = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.ROOT).apply { timeZone = java.util.TimeZone.getTimeZone("GMT+08:00") }
+        return Appearance.Visible(
+            page = page, x = Appearance.round100(a.x), y = Appearance.round100(a.y), w = Appearance.round100(a.width), h = Appearance.round100(a.height),
+            name = GoText.trimSpace(name), role = o.claimedRole ?: "",
+            lang = a.lang?.takeIf { it.isNotEmpty() } ?: o.lang?.takeIf { it.isNotEmpty() } ?: "mn",
+            date = df.format(now) + " (+08)",
+            url = Precheck.VERIFY_URL + docId + "/" + revIndex,
         )
     }
 

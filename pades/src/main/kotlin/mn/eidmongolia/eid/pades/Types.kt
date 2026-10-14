@@ -15,6 +15,7 @@ import java.util.Date
  * @param verifyPage append the verification (QR) page — only for a document without signatures
  * @param fileName name shown on the page (required with [verifyPage]; NFC, ≤ 120 characters)
  * @param lang page language "mn" | "en"; null → reference default
+ * @param appearance visible signature (APPEARANCE_SPEC.md); null → invisible (default, byte-identical to before)
  */
 class PrepareOptions(
     val signerCert: ByteArray,
@@ -26,6 +27,24 @@ class PrepareOptions(
     val docId: String? = null,
     val verifyPage: Boolean = false,
     val fileName: String? = null,
+    val lang: String? = null,
+    val appearance: SignatureAppearance? = null,
+)
+
+/**
+ * Visible signature placement — Go reference `pades.Appearance` (APPEARANCE_SPEC.md §1; iOS `SignatureAppearance` 1:1).
+ * Coordinates in pt from the bottom-left corner of the page's CropBox (else MediaBox) AFTER /Rotate (as displayed);
+ * x to the right, y up. Each value is rounded to 0.01 pt; height ≥ 45 pt (QR), else REQUEST_INVALID.
+ *
+ * @param page input document page, 1-based; 0 → the input's last page (a verify page added by this prepare is not counted)
+ * @param lang "mn" | "en"; null → [PrepareOptions.lang] (else mn)
+ */
+class SignatureAppearance(
+    val page: Int = 0,
+    val x: Double,
+    val y: Double,
+    val width: Double,
+    val height: Double,
     val lang: String? = null,
 )
 
@@ -62,6 +81,7 @@ class CompleteOptions(
  * @property pageSha256 document after the verify page, before the signature revision ([hasPage] only)
  * @property sigRevSha256 the signature revision (before DSS) — doc[:ByteRange end]
  * @property priorCmsSha256 earlier signatures' CMS DER sha256, document order
+ * @property priorRevisionSha256 earlier signatures' revision sha256 (doc[:ByteRange end]), same order as [priorCmsSha256]
  */
 class Completed(
     val pdf: ByteArray,
@@ -75,4 +95,5 @@ class Completed(
     val revIndex: Int,
     val sigRevSha256: String,
     val priorCmsSha256: List<String>,
+    val priorRevisionSha256: List<String>,
 )

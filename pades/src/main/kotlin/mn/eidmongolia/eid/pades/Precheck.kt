@@ -62,6 +62,21 @@ internal object Precheck {
         return Result(false, sigs.size + 1, checked.map { it.cmsSha256 })
     }
 
+    /**
+     * sha256(doc[:ByteRange end]) of every signature other than the one whose ByteRange is [own], object order — equals
+     * each prior signature's own sigRevSha256 (Go Completed.PriorRevisionSHA256, same order as priorCmsSha256).
+     */
+    fun priorRevisionSha256(doc: ByteArray, own: LongArray): List<String> {
+        val ownList = own.toList()
+        return scan(doc).first.filter { it.byteRange != ownList }.map { s ->
+            val br = s.byteRange
+            require(br != null && br.size == 4 && br[2] + br[3] <= doc.size) { "ByteRange" }
+            val h = java.security.MessageDigest.getInstance("SHA-256")
+            h.update(doc, 0, (br[2] + br[3]).toInt())
+            Hex.encode(h.digest())
+        }
+    }
+
     /** Step 4: /Encrypt in the trailer; when the parser cannot open the file, the `/Encrypt n g R` byte pattern. */
     private fun encrypted(doc: ByteArray): Boolean = try {
         val r = PdfReader.open(doc)

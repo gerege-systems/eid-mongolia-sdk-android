@@ -82,18 +82,18 @@ internal object VerifyPage {
     private const val QR_MODULE = 2
     private const val QR_TEXT_X = 136
     private const val FILE_NAME_MAX = 3
-    private const val TEXT = "0.118 0.118 0.118"
-    private const val MUTED = "0.431 0.431 0.431"
-    private const val OK = "0.086 0.541 0.31"
+    const val TEXT = "0.118 0.118 0.118"
+    const val MUTED = "0.431 0.431 0.431"
+    const val OK = "0.086 0.541 0.31"
     private const val BANNER = "0.863 0.961 0.902"
     private const val LINE = "0.863 0.863 0.863"
     private const val LINK = "0.118 0.431 0.863"
     private const val BANNER_PATH = "48 800 m\n546 800 l\n549.31 800 552 797.31 552 794 c\n552 754 l\n552 750.69 549.31 748 546 748 c\n" +
         "48 748 l\n44.69 748 42 750.69 42 754 c\n42 794 l\n42 797.31 44.69 800 48 800 c\nh\nf"
 
-    private class Link(val x1: Int, val y1: Int, val x2: Int, val y2: Int, val url: String)
+    class Link(val x1: Int, val y1: Int, val x2: Int, val y2: Int, val url: String)
 
-    private class Writer(val reg: PageFont, val bld: PageFont) {
+    class Writer(val reg: PageFont, val bld: PageFont) {
         val ops = StringBuilder()
         val links = ArrayList<Link>()
 
@@ -121,11 +121,14 @@ internal object VerifyPage {
             val str = if (id == 3) {
                 "(" + s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") + ")"
             } else {
-                gids(id, s).joinToString("", "<", ">") { String.format(Locale.ROOT, "%04X", it) }
+                glyphHex(id, s)
             }
             op("$color rg")
             op("BT /F$id $size Tf $x $y Td $str Tj ET")
         }
+
+        /** F1/F2 text `<GGGG…>` (PAGE_SPEC.md §2). */
+        fun glyphHex(id: Int, s: String): String = gids(id, s).joinToString("", "<", ">") { String.format(Locale.ROOT, "%04X", it) }
 
         fun link(id: Int, size: Int, x: Int, y: Int, s: String) {
             val wd = (width1000(id, size, s) + 999) / 1000
@@ -137,8 +140,10 @@ internal object VerifyPage {
             op("0.75 w $LEFT $y m ${LEFT + WIDTH} $y l S")
         }
 
-        fun wrap(id: Int, size: Int, s: String, maxW: Int, maxLines: Int): List<String> {
-            val limit = maxW * 1000
+        fun wrap(id: Int, size: Int, s: String, maxW: Int, maxLines: Int): List<String> = wrapLimit(id, size, s, maxW * 1000, maxLines)
+
+        /** [wrap] with the width limit in 1/1000 pt (visible signature: 1/100 pt × 10). */
+        fun wrapLimit(id: Int, size: Int, s: String, limit: Int, maxLines: Int): List<String> {
             fun fits(t: String) = width1000(id, size, t) <= limit
             val lines = ArrayList<String>()
             var cur = ""
@@ -189,7 +194,7 @@ internal object VerifyPage {
         return s
     }
 
-    private fun asciiUrl(u: String) = u.isNotEmpty() && u.all { it.code in 0x21..0x7e && it != '(' && it != ')' && it != '\\' }
+    fun asciiUrl(u: String) = u.isNotEmpty() && u.all { it.code in 0x21..0x7e && it != '(' && it != ')' && it != '\\' }
 
     private fun content(p: Data, w: Writer): ByteArray {
         require(asciiUrl(p.verifyUrl) && (p.trustUrl.isEmpty() || asciiUrl(p.trustUrl))) { "URL is not ASCII" }
@@ -306,27 +311,25 @@ internal object VerifyPage {
         return inc.finish(rootRef.id)
     }
 
-    private fun streamObj(extra: String, data: ByteArray) =
+    fun streamObj(extra: String, data: ByteArray) =
         Der.concat("<< /Length ${data.size}$extra >>\nstream\n".toByteArray(), data, "\nendstream".toByteArray())
 
     private fun writeFont(inc: Incremental, ids: IntArray, f: PageFont) {
-        inc.writeObject(
-            ids[0],
-            "<< /Type /Font /Subtype /Type0 /BaseFont /${f.psName} /Encoding /Identity-H /DescendantFonts [${ids[1]} 0 R] /ToUnicode ${ids[4]} 0 R >>".toByteArray(),
-        )
+        fontBodies(ids, f).forEachIndexed { i, b -> inc.writeObject(ids[i], b) }
+    }
+
+    /** [writeFont]'s 5 object bodies (in [ids] order) — shared by the verify page and the visible signature. */
+    fun fontBodies(ids: IntArray, f: PageFont): List<ByteArray> {
         val wa = f.widths.indices.joinToString(" ") { f.width1000(it).toString() }
-        inc.writeObject(
-            ids[1],
+        return listOf(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /${f.psName} /Encoding /Identity-H /DescendantFonts [${ids[1]} 0 R] /ToUnicode ${ids[4]} 0 R >>".toByteArray(),
             ("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${f.psName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) " +
                 "/Supplement 0 >> /FontDescriptor ${ids[2]} 0 R /CIDToGIDMap /Identity /W [0 [$wa]] >>").toByteArray(),
-        )
-        inc.writeObject(
-            ids[2],
             ("<< /Type /FontDescriptor /FontName /${f.psName} /Flags 32 /FontBBox [${f.bbox[0]} ${f.bbox[1]} ${f.bbox[2]} ${f.bbox[3]}] " +
                 "/ItalicAngle 0 /Ascent ${f.ascent} /Descent ${f.descent} /CapHeight ${f.capHeight} /StemV 80 /FontFile2 ${ids[3]} 0 R >>").toByteArray(),
+            streamObj(" /Length1 ${f.length1} /Filter /FlateDecode", f.stream),
+            streamObj("", toUnicode(f)),
         )
-        inc.writeObject(ids[3], streamObj(" /Length1 ${f.length1} /Filter /FlateDecode", f.stream))
-        inc.writeObject(ids[4], streamObj("", toUnicode(f)))
     }
 
     private fun toUnicode(f: PageFont): ByteArray {
