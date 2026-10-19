@@ -24,7 +24,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.4.0")
+    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.5.0")
 }
 ```
 
@@ -89,5 +89,5 @@ returns a 32-byte DTBS to be signed by the citizen's phone or USB token; `comple
 RFC 3161 timestamp, OCSP/CRL and DSS (PAdES B-LT). Output is byte-identical to the Go reference
 (`gerege-systems/eid-mongolia-sdk-go`, profile `pades-client/1`), enforced by golden vectors in CI. Install from
 JitPack: add `maven("https://jitpack.io")` and
-`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.4.0")` (use the latest tag). This repository is a read-only mirror;
+`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.5.0")` (use the latest tag). This repository is a read-only mirror;
 please file issues here.

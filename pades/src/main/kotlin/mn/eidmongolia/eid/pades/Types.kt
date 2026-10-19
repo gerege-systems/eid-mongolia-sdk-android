@@ -36,7 +36,8 @@ class PrepareOptions(
  * Coordinates in pt from the bottom-left corner of the page's CropBox (else MediaBox) AFTER /Rotate (as displayed);
  * x to the right, y up. Each value is rounded to 0.01 pt; height ≥ 45 pt (QR), else REQUEST_INVALID.
  *
- * @param page input document page, 1-based; 0 → the input's last page (a verify page added by this prepare is not counted)
+ * @param page input document page, 1-based (an explicit number is kept as is); 0 → the input's last page that is not an
+ *   eID verify page — neither this prepare's verify page nor earlier revisions' ones count (PLACEMENT_SPEC §1a)
  * @param lang "mn" | "en"; null → [PrepareOptions.lang] (else mn)
  */
 class SignatureAppearance(

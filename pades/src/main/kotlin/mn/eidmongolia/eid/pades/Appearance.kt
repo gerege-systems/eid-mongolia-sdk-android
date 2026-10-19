@@ -236,6 +236,46 @@ internal object Appearance {
         return walk(pages, owner, 0)
     }
 
+    /**
+     * Go `core.DefaultStampPage` (PLACEMENT_SPEC §1a): the page for `appearance.page` 0 — the last page (tree order) that
+     * is not an eID verify page — and the page count n. All pages verify pages → n.
+     */
+    fun defaultStampPage(doc: ByteArray, verifyUri: String): Pair<Int, Int> {
+        val inc = Incremental(doc)
+        val rd = inc.reader
+        val pages = ArrayList<PdfDict>()
+        fun walk(v: PdfObj, depth: Int) {
+            if (depth > MAX_DEPTH || pages.size > (1 shl 16)) return
+            val d = rd.resolve(v).dict ?: return
+            when (rd.get(d, "Type").name) {
+                "Page" -> pages.add(d)
+                "Pages" -> (rd.get(d, "Kids") as? PdfObj.Arr)?.items?.forEach { walk(it, depth + 1) }
+            }
+        }
+        walk(inc.root["Pages"], 0)
+        val n = pages.size
+        for (i in n - 1 downTo 0) {
+            if (!isVerifyPage(rd, pages[i], verifyUri)) return (i + 1) to n
+        }
+        return n to n
+    }
+
+    /** Go `isVerifyPage`: /Annots (first 10 000) holds a /Link whose /A is `/S /URI` with /URI byte-equal to verifyUri. Unreadable → false. */
+    fun isVerifyPage(rd: PdfReader, page: PdfDict, verifyUri: String): Boolean {
+        val want = verifyUri.toByteArray(Charsets.US_ASCII)
+        val annots = try { rd.get(page, "Annots") as? PdfObj.Arr } catch (e: Exception) { null } ?: return false
+        for (e in annots.items.take(10_000)) {
+            val hit = try {
+                val a = rd.resolve(e).dict
+                val act = a?.takeIf { rd.get(it, "Subtype").name == "Link" }?.let { rd.get(it, "A").dict }
+                val uri = act?.takeIf { rd.get(it, "S").name == "URI" }?.let { rd.get(it, "URI") } as? PdfObj.Str
+                uri != null && uri.bytes.contentEquals(want)
+            } catch (x: Exception) { false }
+            if (hit) return true
+        }
+        return false
+    }
+
     /** Number of /Page objects in the document's /Pages tree (counts the tree, ignores /Count). */
     fun pageCount(doc: ByteArray): Int {
         val inc = Incremental(doc)

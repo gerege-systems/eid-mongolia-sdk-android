@@ -182,12 +182,12 @@ internal object Pades {
         }
     }
 
-    /** Go visibleSpec: page (0 → the input's last), h100, language, date (+08), verify URL. */
+    /** Go visibleSpec: page (0 → the last page that is not an eID verify page, PLACEMENT_SPEC §1a), h100, language, date (+08), verify URL. */
     private fun visibleSpec(doc: ByteArray, o: PrepareOptions, name: String, now: Date, docId: String, revIndex: Int): Appearance.Visible {
         val a = o.appearance!!
         if (docId.isEmpty()) throw EidPadesException.RequestInvalid("appearance: docId required (document has no verify page)")
-        val n = try { Appearance.pageCount(doc) } catch (e: Exception) { throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}") }
-        val page = if (a.page == 0) n else a.page
+        val (last, n) = try { Appearance.defaultStampPage(doc, Precheck.VERIFY_URL + docId) } catch (e: Exception) { throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}") }
+        val page = if (a.page == 0) last else a.page
         if (page > n) throw EidPadesException.RequestInvalid("appearance: page $page > page count $n")
         val df = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.ROOT).apply { timeZone = java.util.TimeZone.getTimeZone("GMT+08:00") }
         return Appearance.Visible(
