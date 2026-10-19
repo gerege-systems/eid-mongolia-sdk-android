@@ -14,7 +14,11 @@ internal object SignatureRevision {
     private const val BYTE_RANGE_WIDTH = 40
     const val REASON_MAX_UNITS = 127
 
-    class Prepared(val pdf: ByteArray, val byteRange: LongArray, val digest: ByteArray, val fieldName: String)
+    /** [placement] — the visible stamp's final position (null for an invisible signature), PLACEMENT_SPEC.md. */
+    class Prepared(
+        val pdf: ByteArray, val byteRange: LongArray, val digest: ByteArray, val fieldName: String,
+        val placement: StampPlacement.Result? = null,
+    )
 
     class PlaceholderOverflow(msg: String) : Exception(msg)
 
@@ -63,6 +67,7 @@ internal object SignatureRevision {
 
         // ── field + widget ──
         val page: Pair<PdfDict, PdfRef>?
+        var placement: StampPlacement.Result? = null
         if (vis == null) {
             // Invisible (digitorus createVisualSignature, invisible): first page.
             val fld = StringBuilder("<<\n  /Type /Annot\n  /Subtype /Widget\n  /Rect [0 0 0 0]\n")
@@ -74,7 +79,11 @@ internal object SignatureRevision {
             if (sigText(signerName, 120) == null || GoText.trimSpace(signerName) != vis.name) throw AppearanceException("name cannot be written to /Name")
             page = Appearance.nthPage(rd, root["Pages"], rd.trailer["Root"].ref, vis.page) ?: throw AppearanceException("page ${vis.page} missing")
             val g = Appearance.geometry(rd, page.first)
-            val rect = Appearance.rect(g.box, g.rot, vis.x, vis.y, vis.w, vis.h)
+            var rect = Appearance.rect(g.box, g.rot, vis.x, vis.y, vis.w, vis.h)
+            // PLACEMENT_SPEC.md: move off existing page content; the requested rect stays when nothing is free.
+            val placed = StampPlacement.choose(rd, page.first, page.second.id, g.box, g.rot, vis.x, vis.y, vis.w, vis.h)
+            if (placed.status == StampPlacement.Status.MOVED) rect = Appearance.rect(g.box, g.rot, placed.x, placed.y, vis.w, vis.h)
+            placement = placed
             val bodies = Appearance.objects(
                 Appearance.Params(vis.w.toInt(), vis.h.toInt(), g.rot, vis.name, vis.role, vis.lang, vis.date, vis.url), apIds,
             )
@@ -117,7 +126,7 @@ internal object SignatureRevision {
         val h = MessageDigest.getInstance("SHA-256")
         h.update(doc, 0, a.toInt())
         h.update(doc, b.toInt(), doc.size - b.toInt())
-        return Prepared(doc, br, h.digest(), fieldName)
+        return Prepared(doc, br, h.digest(), fieldName, placement)
     }
 
     /** CMS → hex into the placeholder (other bytes untouched); never truncates. */

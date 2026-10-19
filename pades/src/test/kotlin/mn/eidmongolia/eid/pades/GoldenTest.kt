@@ -84,6 +84,17 @@ class GoldenTest {
             assertEquals("$name preparedSha256", e.getString("preparedSha256"), Hex.encode(Cms.sha256(st.pdf)))
             val br = e.getJSONArray("byteRange")
             assertArrayEquals("$name byteRange", LongArray(4) { br.getLong(it) }, st.byteRange)
+            // PLACEMENT_SPEC.md: every visible case reports where the stamp went (golden v5: moved / overlap).
+            val wantPl = e.optJSONObject("placement")
+            assertEquals("$name placement", p.has("appearance"), wantPl != null)
+            assertEquals(
+                "$name placement",
+                wantPl?.let {
+                    listOf(it.getInt("page").toDouble(), it.getDouble("x"), it.getDouble("y"), it.getDouble("width"), it.getDouble("height"))
+                },
+                prep.placement?.let { listOf(it.page.toDouble(), it.x, it.y, it.width, it.height) },
+            )
+            assertEquals("$name placement status", wantPl?.getString("status"), prep.placement?.status?.wire)
 
             val res = Pades.complete(
                 prep.state, Hex.decode(e.getString("signature")),
@@ -97,11 +108,14 @@ class GoldenTest {
             assertEquals("$name pageSha256", e.optString("pageSha256").ifEmpty { null }, res.pageSha256)
             val prior = e.optJSONArray("priorCmsSha256")
             assertEquals("$name priorCmsSha256", (0 until (prior?.length() ?: 0)).map { prior!!.getString(it) }, res.priorCmsSha256)
-            // Each prior signature's revision hash = its own sigRevSha256 (inputs "case:<prev>" carry one prior signature).
-            val prev = c.getString("input").takeIf { it.startsWith("case:") }?.removePrefix("case:")
-            val wantPriorRev = prev?.let { pn ->
-                listOf((0 until cases.length()).map { cases.getJSONObject(it) }.single { it.getString("name") == pn }.getJSONObject("expect").getString("sigRevSha256"))
-            } ?: emptyList()
+            // Prior signatures' revision hashes = each earlier case's own sigRevSha256, in document order along the
+            // "case:<prev>" chain (golden v5 quartz-pdf13-visible-third has two).
+            fun revisions(input: String): List<String> {
+                if (!input.startsWith("case:")) return emptyList()
+                val prev = (0 until cases.length()).map { cases.getJSONObject(it) }.single { it.getString("name") == input.removePrefix("case:") }
+                return revisions(prev.getString("input")) + prev.getJSONObject("expect").getString("sigRevSha256")
+            }
+            val wantPriorRev = revisions(c.getString("input"))
             assertEquals("$name priorRevisionSha256", wantPriorRev, res.priorRevisionSha256)
             assertEquals("$name outSha256", e.getString("outSha256"), res.outSha256)
             checkRegistration(name, res, p.optString("fileName").ifEmpty { null })

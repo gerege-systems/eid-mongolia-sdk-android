@@ -89,7 +89,16 @@ internal object Pades {
             revIndex = pre.revIndex, inSha256 = inHex, hasPage = hasPage, pageSha256 = pageHex, claimedRole = o.claimedRole,
             priorCmsSha256 = pre.priorCmsSha256, pdf = prep.pdf, fileName = fileName,
         )
-        return Prepared(dtbs = Cms.dtbs(attrs), digest = prep.digest, docId = docId ?: "", state = st.encode())
+        val placement = if (vis != null && prep.placement != null) {
+            val pl = prep.placement
+            Placement(
+                page = vis.page, x = pl.x / 100.0, y = pl.y / 100.0, width = vis.w / 100.0, height = vis.h / 100.0,
+                status = PlacementStatus.valueOf(pl.status.name),
+            )
+        } else {
+            null
+        }
+        return Prepared(dtbs = Cms.dtbs(attrs), digest = prep.digest, docId = docId ?: "", state = st.encode(), placement = placement)
     }
 
     fun complete(state: ByteArray, signature: ByteArray, o: CompleteOptions, env: Env = Env()): Completed {

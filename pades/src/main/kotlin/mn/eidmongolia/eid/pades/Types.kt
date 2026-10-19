@@ -53,13 +53,43 @@ class SignatureAppearance(
  * @property dtbs the 32 bytes the phone/token signs — SHA-256(signedAttrs) (RP-API `RAW_DIGEST_SIGNATURE` hash)
  * @property digest messageDigest = SHA-256(ByteRange)
  * @property state opaque, serialisable — the app may persist it while waiting for the signature
+ * @property placement where the visible stamp was drawn; null without [PrepareOptions.appearance] (PLACEMENT_SPEC.md)
  */
 class Prepared(
     val dtbs: ByteArray,
     val digest: ByteArray,
     val docId: String,
     val state: ByteArray,
+    val placement: Placement? = null,
 )
+
+/**
+ * The visible stamp's final rect ([SignatureAppearance] coordinates, pt) and how it was chosen — Go `pades.Placement`
+ * (iOS `EidPades.Placement` 1:1). The stamp avoids existing page content (PLACEMENT_SPEC.md); surface
+ * [PlacementStatus.OVERLAP] / [PlacementStatus.UNSCANNED] to the signer — the signature is valid either way.
+ *
+ * @property page 1-based page the stamp is on
+ */
+data class Placement(
+    val page: Int,
+    val x: Double,
+    val y: Double,
+    val width: Double,
+    val height: Double,
+    val status: PlacementStatus,
+)
+
+/** [Placement.status]; [wire] = the Go/iOS string. */
+enum class PlacementStatus(val wire: String) {
+    /** Drawn at the requested spot (it was free). */
+    REQUESTED("requested"),
+    /** The requested spot was occupied; the stamp moved to free space. */
+    MOVED("moved"),
+    /** No free spot: drawn at the requested spot over content. */
+    OVERLAP("overlap"),
+    /** The page could not be scanned within the limits: drawn at the requested spot. */
+    UNSCANNED("unscanned"),
+}
 
 /**
  * [EidPades.complete] input.
