@@ -54,7 +54,7 @@ internal class Cert private constructor(val raw: ByteArray, val x509: X509Certif
     override fun equals(other: Any?) = other is Cert && raw.contentEquals(other.raw)
     override fun hashCode() = raw.contentHashCode()
 
-    /** Go `c.CheckSignatureFrom(issuer)` (signature only; Go also requires a CA issuer — eID issuers are CAs). */
+    /** The signature verifies with [issuer]'s key (Go `issuer.CheckSignature` — no CA checks; see [issuedBy]). */
     fun signedBy(issuer: Cert): Boolean = try {
         x509.verify(issuer.publicKey)
         true
@@ -62,8 +62,41 @@ internal class Cert private constructor(val raw: ByteArray, val x509: X509Certif
         false
     }
 
-    /** Go `bytes.Equal(c.RawIssuer, issuer.RawSubject) && c.CheckSignatureFrom(issuer) == nil`. */
-    fun issuedBy(issuer: Cert) = rawIssuer.contentEquals(issuer.rawSubject) && signedBy(issuer)
+    /**
+     * Go `bytes.Equal(c.RawIssuer, issuer.RawSubject) && c.CheckSignatureFrom(issuer) == nil`: the issuer must be a CA
+     * allowed to sign certificates (basicConstraints cA, keyUsage keyCertSign when present).
+     */
+    fun issuedBy(issuer: Cert) = rawIssuer.contentEquals(issuer.rawSubject) && issuer.mayIssue(KU_CERT_SIGN) && signedBy(issuer)
+
+    /** basicConstraints extension present (Go `BasicConstraintsValid`). */
+    val basicConstraintsValid: Boolean get() = extension(OID_BASIC_CONSTRAINTS) != null
+    /** basicConstraints cA = true. */
+    val isCa: Boolean get() = basicConstraintsValid && x509.basicConstraints >= 0
+    /** pathLenConstraint; null = no limit (Go `MaxPathLen` -1). */
+    val maxPathLen: Int? get() = x509.basicConstraints.takeIf { isCa && it != Int.MAX_VALUE }
+
+    /**
+     * Go `CheckSignatureFrom` / `RevocationList.CheckSignatureFrom` parent checks: a v3 certificate needs basicConstraints
+     * with cA = true (v1/v2 without the extension are accepted, like Go); a non-empty keyUsage must include [usageBit]
+     * ([KU_CERT_SIGN] for certificates, [KU_CRL_SIGN] for CRLs).
+     */
+    fun mayIssue(usageBit: Int): Boolean {
+        if (x509.version == 3 && !basicConstraintsValid || basicConstraintsValid && !isCa) return false
+        val ku = x509.keyUsage ?: return true
+        return ku.none { it } || (usageBit < ku.size && ku[usageBit])
+    }
+
+    /** Go `Verify` path-length rule: [intermediates] CA certificates below this one in the chain. */
+    fun allowsPath(intermediates: Int): Boolean = maxPathLen?.let { intermediates <= it } ?: true
+
+    fun validAt(at: java.util.Date) = !at.before(x509.notBefore) && !at.after(x509.notAfter)
+
+    /** SubjectKeyIdentifier (empty if absent). */
+    val subjectKeyId: ByteArray
+        get() = extension(OID_SKI)?.second?.let { Der.parse(it).value() } ?: ByteArray(0)
+
+    /** Errors name certificates by serial (Go `SerialNumber.Text(16)`), never by CN — the citizen's name is PII. */
+    val serialRef: String get() = "serial " + serial.toString(16)
 
     fun extension(oid: String): Pair<Boolean, ByteArray>? =
         extensions.firstOrNull { it.first == oid }?.let { it.second to it.third }
@@ -113,6 +146,9 @@ internal class Cert private constructor(val raw: ByteArray, val x509: X509Certif
 
     val commonName: String get() = subjectAttrs.lastOrNull { it.first == "2.5.4.3" }?.second ?: ""
 
+    /** Subject attribute (last occurrence wins, like Go pkix.Name). */
+    fun subjectAttr(oid: String): String? = subjectAttrs.lastOrNull { it.first == oid }?.second
+
     /** Go `cert.Issuer.CommonName`. */
     val issuerCommonName: String get() = issuerAttrs.lastOrNull { it.first == "2.5.4.3" }?.second ?: ""
 
@@ -130,6 +166,14 @@ internal class Cert private constructor(val raw: ByteArray, val x509: X509Certif
         const val OID_AD_OCSP = "1.3.6.1.5.5.7.48.1"
         const val OID_CRL_DP = "2.5.29.31"
         const val OID_EKU = "2.5.29.37"
+        const val OID_ANY_EKU = "2.5.29.37.0"
+        const val OID_SERIAL_NUMBER = "2.5.4.5"
+        const val OID_BASIC_CONSTRAINTS = "2.5.29.19"
+        const val OID_SKI = "2.5.29.14"
+        const val OID_AKI = "2.5.29.35"
+        /** java.security.cert.X509Certificate.getKeyUsage() indices. */
+        const val KU_CERT_SIGN = 5
+        const val KU_CRL_SIGN = 6
         const val OID_KP_TIMESTAMPING = "1.3.6.1.5.5.7.3.8"
         const val OID_KP_OCSP_SIGNING = "1.3.6.1.5.5.7.3.9"
 

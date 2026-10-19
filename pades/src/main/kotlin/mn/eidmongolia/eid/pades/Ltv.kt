@@ -1,6 +1,7 @@
 package mn.eidmongolia.eid.pades
 
 import java.io.IOException
+import java.math.BigInteger
 import java.security.MessageDigest
 import java.util.Date
 
@@ -12,7 +13,16 @@ internal class DssData(
     var contents: ByteArray? = null,
 )
 
-/** B-LT collection — Go reference `pades/ltv.go` (OCSP SHA-1 CertID, CRL by CDP, fail-closed). */
+/**
+ * A chain certificate is revoked by its issuer-signed OCSP response or CRL (Go `pades.ErrCertificateRevoked`). Final —
+ * `complete` stops at once (no other URL/CRL is tried for a "good" answer, no retry).
+ */
+internal class CertificateRevoked(val ref: String) : IOException("certificate revoked ($ref)")
+
+/**
+ * B-LT collection — Go reference `pades/ltv.go`: OCSP (SHA-1 CertID) and CRL (CDP) per chain certificate, checked for
+ * signature/issuer, CertID, freshness ([Revocation.freshAt] at the current time); fail-closed; revoked → [CertificateRevoked].
+ */
 internal object Ltv {
     class NotFresh(msg: String) : IOException(msg)
     class Incomplete(msg: String) : IOException(msg)
@@ -47,14 +57,14 @@ internal object Ltv {
             if (list.none { it.contentEquals(der) }) list += der
         }
         val pool = chains.flatMap { it }
-        fun issuerOf(c: Cert) = (pool + roots).firstOrNull { it.rawSubject.contentEquals(c.rawIssuer) && c.signedBy(it) }
+        fun issuerOf(c: Cert) = (pool + roots).firstOrNull { c.issuedBy(it) }
         val seen = HashSet<Cert>()
         for (ch in chains) {
             for ((i, c) in ch.withIndex()) {
                 if (c in seen || roots.contains(c)) continue
                 seen += c
                 add(d.certs, c.raw)
-                val issuer = issuerOf(c) ?: throw Incomplete("issuer of ${c.commonName} not found")
+                val issuer = issuerOf(c) ?: throw Incomplete("issuer of ${c.serialRef} not found")
                 var ok = false
                 var freshErr: NotFresh? = null
                 val fresh = if (i == 0) after else null
@@ -65,27 +75,26 @@ internal object Ltv {
                         resp.certificate?.let { if (it != issuer) add(d.certs, it.raw) } // delegated responder
                         ok = true
                         break
+                    } catch (e: CertificateRevoked) {
+                        throw e
                     } catch (e: NotFresh) {
                         freshErr = e
                     } catch (_: Exception) {
                     }
                 }
                 for (u in c.crlDistributionPoints) {
-                    try {
-                        val der = f.get(u)
-                        if (crlCovers(der, c, issuer, now)) {
-                            add(d.crls, der)
-                            ok = true
-                        }
-                    } catch (_: Exception) {
+                    val der = try { f.get(u) } catch (_: Exception) { continue }
+                    if (Crl.covers(der, c, issuer, now)) {
+                        add(d.crls, der)
+                        ok = true
                     }
                 }
                 if (!ok) {
-                    freshErr?.let { throw NotFresh("${it.message}: ${c.commonName}") }
-                    throw Incomplete("no valid OCSP/CRL for ${c.commonName}")
+                    freshErr?.let { throw NotFresh("${it.message}: ${c.serialRef}") }
+                    throw Incomplete("no valid OCSP/CRL for ${c.serialRef}")
                 }
                 if (i == 0 && after != null && freshErr != null && c.ocspServers.isNotEmpty() && !hasFreshOcsp(d.ocsps, c, issuer, after)) {
-                    throw NotFresh("${freshErr.message}: ${c.commonName}")
+                    throw NotFresh("${freshErr.message}: ${c.serialRef}")
                 }
             }
         }
@@ -93,46 +102,118 @@ internal object Ltv {
     }
 
     private fun hasFreshOcsp(list: List<ByteArray>, c: Cert, issuer: Cert, after: Date) = list.any {
-        try { Ocsp.parseForCert(it, c, issuer).thisUpdate.after(after) } catch (_: Exception) { false }
+        try { Ocsp.parseForCert(it, c, issuer).thisUpdate.after(after) && Ocsp.certIdMatches(it, c, issuer) } catch (_: Exception) { false }
     }
 
-    private fun fetchOcsp(f: Fetcher, url: String, c: Cert, issuer: Cert, now: Date, after: Date?): Pair<ByteArray, Ocsp.Response> {
+    /**
+     * Go fetchOCSP: SHA-1 CertID request; signed by the issuer (or a delegated id-kp-OCSPSigning responder), CertID = this
+     * certificate + issuer, revoked → [CertificateRevoked], good and fresh now, thisUpdate after [after] (when given).
+     */
+    fun fetchOcsp(f: Fetcher, url: String, c: Cert, issuer: Cert, now: Date, after: Date?): Pair<ByteArray, Ocsp.Response> {
         val der = f.post(url, "application/ocsp-request", Ocsp.request(c, issuer))
         val resp = Ocsp.parseForCert(der, c, issuer)
         if (!Ocsp.responderOk(resp, issuer)) throw IOException("OCSP responder EKU is not OCSPSigning")
-        if (resp.status != Ocsp.GOOD || (resp.nextUpdate != null && resp.nextUpdate.before(now))) {
-            throw IOException("OCSP ${c.commonName}: status ${resp.status}")
+        if (!Ocsp.certIdMatches(der, c, issuer)) throw IOException("OCSP CertID is not this certificate's")
+        if (resp.status == Ocsp.REVOKED) throw CertificateRevoked(c.serialRef)
+        if (resp.status != Ocsp.GOOD || !Revocation.freshAt(resp.thisUpdate, resp.nextUpdate, now, now)) {
+            throw IOException("OCSP ${c.serialRef}: not good or not fresh")
         }
         if (after != null && !resp.thisUpdate.after(after)) throw NotFresh("OCSP thisUpdate is not after the timestamp")
         return der to resp
     }
+}
 
-    /** Go crlCovers: CRL of c's issuer (signature checked), nextUpdate not passed, c not listed. */
-    fun crlCovers(der: ByteArray, c: Cert, issuer: Cert, now: Date): Boolean = try {
-        val list = Der.parse(der).children()
-        val tbs = list[0]
-        val f = tbs.children()
-        var i = if (f[0].tag == Der.INTEGER) 1 else 0
-        i++ // signature algorithm
-        val crlIssuer = f[i++].encoded()
-        i++ // thisUpdate
-        val next = f.getOrNull(i)?.takeIf { it.tag == Der.UTC_TIME || it.tag == Der.GENERALIZED_TIME }?.let { i++; Asn1Time.parse(it) }
-        val revoked = f.getOrNull(i)?.takeIf { it.tag == Der.SEQUENCE }?.children()?.map { it.child(0).bigInt() } ?: emptyList()
-        val sigOid = list[1].child(0).oid()
+/** Freshness of revocation evidence — Go `validate.FreshAt` (README §7.2, golden validate/v4). */
+internal object Revocation {
+    /** thisUpdate may be at most this long before the check time when nextUpdate does not cover it. */
+    const val MAX_AGE_MS = 24 * 3600_000L
+    /** Responder ↔ checker clock tolerance. */
+    const val CLOCK_SKEW_MS = 5 * 60_000L
+
+    /**
+     * A response with thisUpdate/nextUpdate is "good" evidence at [at] (the check time — the timestamp time, else now):
+     * thisUpdate not after now + skew; nextUpdate (when present) not before at − skew; thisUpdate ≥ at − 24 h, or
+     * [thisUpdate, nextUpdate] covers [at]. Not applied to "revoked" (a revocation does not expire).
+     */
+    fun freshAt(thisUpdate: Date, nextUpdate: Date?, at: Date, now: Date): Boolean {
+        if (thisUpdate.time > now.time + CLOCK_SKEW_MS) return false
+        if (nextUpdate != null && nextUpdate.time < at.time - CLOCK_SKEW_MS) return false
+        if (thisUpdate.time >= at.time - MAX_AGE_MS) return true
+        return nextUpdate != null && thisUpdate.time <= at.time
+    }
+}
+
+/** CRL (RFC 5280 §5.1) — Go `validate.CRLFor` / `CRLListed` / `crlCovers`. */
+internal object Crl {
+    class Parsed(
+        val rawIssuer: ByteArray,
+        val authorityKeyId: ByteArray,
+        val thisUpdate: Date,
+        val nextUpdate: Date?,
+        val revoked: List<BigInteger>,
+        val tbs: ByteArray,
+        val sigOid: String,
+        val signature: ByteArray,
+    )
+
+    fun parse(der: ByteArray): Parsed? = try {
+        val top = Der.parse(der)
+        require(top.tag == Der.SEQUENCE && top.end == der.size)
+        val list = top.children()
+        require(list.size == 3 && list[0].tag == Der.SEQUENCE && list[2].tag == Der.BIT_STRING)
         val bits = list[2]
-        val sig = bits.buf.copyOfRange(bits.valueStart + 1, bits.end)
-        crlIssuer.contentEquals(c.rawIssuer) &&
-            Sig.verifyOid(sigOid, issuer.publicKey, tbs.encoded(), sig) &&
-            next != null && !next.before(now) &&
-            revoked.none { it == c.serial }
+        require(bits.length >= 1 && bits.buf[bits.valueStart].toInt() == 0)
+        val t = list[0].children()
+        var i = if (t[0].tag == Der.INTEGER) 1 else 0
+        i++ // signature algorithm
+        val issuer = t[i++]
+        require(issuer.tag == Der.SEQUENCE)
+        val thisUpdate = Asn1Time.parse(t[i++])
+        var next: Date? = null
+        if (i < t.size && (t[i].tag == Der.UTC_TIME || t[i].tag == Der.GENERALIZED_TIME)) next = Asn1Time.parse(t[i++])
+        var revoked = emptyList<BigInteger>()
+        if (i < t.size && t[i].tag == Der.SEQUENCE) revoked = t[i++].children().map { e -> e.child(0).also { require(it.tag == Der.INTEGER) }.bigInt() }
+        var aki = ByteArray(0)
+        if (i < t.size && t[i].tag == Der.ctx(0)) {
+            for (ext in t[i].child(0).children()) {
+                val p = ext.children()
+                if (p[0].oid() != Cert.OID_AKI) continue
+                Der.parse(p.last().value()).children().firstOrNull { it.tag == Der.ctx(0, constructed = false) }?.let { aki = it.value() }
+            }
+        }
+        Parsed(issuer.encoded(), aki, thisUpdate, next, revoked, list[0].encoded(), list[1].child(0).oid(),
+            bits.buf.copyOfRange(bits.valueStart + 1, bits.end))
     } catch (_: Exception) {
-        false
+        null
+    }
+
+    /**
+     * Go `validate.CRLFor`: the CRL of [cert]'s issuer — CRL issuer = cert issuer = issuer subject (raw bytes), AKI (when
+     * both present) = the issuer's SKI, signed by the issuer (a CA allowed to sign CRLs).
+     */
+    fun isFor(crl: Parsed, cert: Cert, issuer: Cert): Boolean {
+        if (!crl.rawIssuer.contentEquals(cert.rawIssuer) || !crl.rawIssuer.contentEquals(issuer.rawSubject)) return false
+        val ski = issuer.subjectKeyId
+        if (crl.authorityKeyId.isNotEmpty() && ski.isNotEmpty() && !crl.authorityKeyId.contentEquals(ski)) return false
+        return issuer.mayIssue(Cert.KU_CRL_SIGN) && Sig.verifyOid(crl.sigOid, issuer.publicKey, crl.tbs, crl.signature)
+    }
+
+    /**
+     * Go crlCovers: a CRL of [c]'s issuer with a nextUpdate, fresh now ([Revocation.freshAt]), [c] not listed.
+     * @throws CertificateRevoked when [c] is listed in its issuer's CRL
+     */
+    fun covers(der: ByteArray, c: Cert, issuer: Cert, now: Date): Boolean {
+        val crl = parse(der) ?: return false
+        if (!isFor(crl, c, issuer)) return false
+        if (crl.revoked.any { it == c.serial }) throw CertificateRevoked(c.serialRef)
+        return crl.nextUpdate != null && Revocation.freshAt(crl.thisUpdate, crl.nextUpdate, now, now)
     }
 }
 
 /** OCSP (RFC 6960) request/response — x/crypto/ocsp semantics the Go reference uses. */
 internal object Ocsp {
     const val GOOD = 0
+    const val REVOKED = 1
     private const val OID_SHA1 = "1.3.14.3.2.26"
     private const val OID_BASIC = "1.3.6.1.5.5.7.48.1.1"
 
@@ -176,6 +257,44 @@ internal object Ocsp {
         val thisUpdate = Asn1Time.parse(s[2])
         val next = s.drop(3).firstOrNull { it.tag == Der.ctx(0) }?.let { Asn1Time.parse(it.child(0)) }
         return Response(status, thisUpdate, next, responder)
+    }
+
+    private val HASHES = mapOf(
+        "1.3.14.3.2.26" to "SHA-1",
+        "2.16.840.1.101.3.4.2.1" to "SHA-256",
+        "2.16.840.1.101.3.4.2.2" to "SHA-384",
+        "2.16.840.1.101.3.4.2.3" to "SHA-512",
+    )
+
+    /**
+     * Go `validate.OCSPCertIDMatches`: every SingleResponse for [c]'s serial carries [issuer]'s CertID (issuerNameHash =
+     * H(issuer subject), issuerKeyHash = H(issuer subjectPublicKey); SHA-1/256/384/512) and there is at least one.
+     * [parseForCert] selects by serial only, so a response for another issuer's certificate with the same serial (even
+     * from the same responder) must not count for this certificate.
+     */
+    fun certIdMatches(der: ByteArray, c: Cert, issuer: Cert): Boolean {
+        try {
+            val top = Der.parse(der).children()
+            require(top[0].tag == Der.ENUMERATED && top[0].value().single() == 0.toByte())
+            val basic = Der.parse(top[1].child(0).child(1).value()).children()
+            val rd = basic[0].children()
+            var i = if (rd[0].tag == Der.ctx(0)) 1 else 0
+            i += 2 // responderID, producedAt
+            var found = false
+            for (single in rd[i].children()) {
+                val id = single.child(0).children()
+                require(id.size == 4 && id[1].tag == Der.OCTET_STRING && id[2].tag == Der.OCTET_STRING && id[3].tag == Der.INTEGER)
+                if (id[3].bigInt() != c.serial) continue
+                val h = HASHES[id[0].child(0).oid()] ?: return false
+                if (!id[1].value().contentEquals(MessageDigest.getInstance(h).digest(issuer.rawSubject)) ||
+                    !id[2].value().contentEquals(MessageDigest.getInstance(h).digest(issuer.publicKeyBits))
+                ) return false
+                found = true
+            }
+            return found
+        } catch (_: Exception) {
+            return false
+        }
     }
 
     /** Go responderOK: issuer itself, or a responder certificate with id-kp-OCSPSigning. */

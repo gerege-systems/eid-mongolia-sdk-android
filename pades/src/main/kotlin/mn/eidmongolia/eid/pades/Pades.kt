@@ -28,6 +28,7 @@ internal object Pades {
     fun prepare(doc: ByteArray, o: PrepareOptions): Prepared {
         if (doc.size > MAX_INPUT_BYTES) throw EidPadesException.PdfTooLarge("PDF larger than 9.75 MiB")
         if (doc.size < 5 || String(doc, 0, 5, Charsets.ISO_8859_1) != "%PDF-") throw EidPadesException.PdfInvalid("not a PDF or damaged")
+        try { Structure.check(doc) } catch (e: Structure.Failure) { throw EidPadesException.PdfInvalid("PDF structure nested too deep or too complex") }
         val cert = try { Cert.parse(o.signerCert) } catch (e: Exception) { throw EidPadesException.SignerInvalid("signerCert: ${e.message}") }
         if (!cert.isRsa && !cert.isEc) throw EidPadesException.SignerInvalid("unsupported signer key type")
         val chain = signerChain(cert, o.chain)
@@ -38,6 +39,7 @@ internal object Pades {
         checkAppearance(o)
         val now = o.signingTime ?: Date()
         val inHex = Hex.encode(Cms.sha256(doc))
+        val fileName = cleanFileName(o.fileName)
         val pre = Precheck.run(doc, EidChain.issuers + chain[0])
         var docId = o.docId?.takeIf { it.isNotEmpty() }
         val hasPage = pre.newDoc && o.verifyPage
@@ -51,7 +53,7 @@ internal object Pades {
         var base = doc
         var pageHex: String? = null
         if (hasPage) {
-            val fileName = cleanFileName(o.fileName) ?: throw EidPadesException.RequestInvalid("fileName required, ≤ 120 characters")
+            if (fileName == null) throw EidPadesException.RequestInvalid("fileName required, ≤ 120 characters")
             val id = docId ?: throw EidPadesException.Internal("docId")
             base = try {
                 VerifyPage.append(
@@ -85,13 +87,16 @@ internal object Pades {
         val st = PrepState(
             docId = docId ?: "", signerCert = cert.raw, chain = chain.map { it.raw }, signedAttrs = attrs, byteRange = prep.byteRange,
             revIndex = pre.revIndex, inSha256 = inHex, hasPage = hasPage, pageSha256 = pageHex, claimedRole = o.claimedRole,
-            priorCmsSha256 = pre.priorCmsSha256, pdf = prep.pdf,
+            priorCmsSha256 = pre.priorCmsSha256, pdf = prep.pdf, fileName = fileName,
         )
         return Prepared(dtbs = Cms.dtbs(attrs), digest = prep.digest, docId = docId ?: "", state = st.encode())
     }
 
     fun complete(state: ByteArray, signature: ByteArray, o: CompleteOptions, env: Env = Env()): Completed {
         val st = try { PrepState.decode(state) } catch (e: Exception) { throw EidPadesException.StateInvalid("state: ${e.message}") }
+        try { Structure.check(st.pdf) } catch (e: Structure.Failure) {
+            throw EidPadesException.StateInvalid("state PDF structure nested too deep or too complex")
+        }
         val cert = try { Cert.parse(st.signerCert) } catch (e: Exception) { throw EidPadesException.StateInvalid("state signerCert") }
         val chain = try { st.chain.map(Cert::parse) } catch (e: Exception) { throw EidPadesException.StateInvalid("state chain") }
         val roots = try {
@@ -121,6 +126,8 @@ internal object Pades {
         }
         val dss = try {
             Ltv.collectWithWait(f, env.now, env.sleep, ts.genTime, roots, listOf(cert) + chain, ts.certificates)
+        } catch (e: CertificateRevoked) {
+            throw EidPadesException.LtvUnavailable(e.message ?: "certificate revoked", certificateRevoked = true)
         } catch (e: Exception) {
             throw EidPadesException.LtvUnavailable("OCSP/CRL: ${e.message}")
         }
@@ -131,16 +138,20 @@ internal object Pades {
             throw EidPadesException.SelfValidationFailed("DSS revision: ${e.message}")
         }
         if (out.size > MAX_OUTPUT_BYTES) throw EidPadesException.PdfTooLarge("output larger than 10 MiB")
-        val priorRev = try {
-            Precheck.priorRevisionSha256(signed, st.byteRange)
+        // Self-check (Go: CA validator; here light): the new signature is the prepared one, covers its whole revision
+        // (`out` extends `signed` unchanged), verifies; signature count = revIndex; /DSS present.
+        val prior = try {
+            require(st.byteRange[2] + st.byteRange[3] == signed.size.toLong() && out.size > signed.size &&
+                out.copyOf(signed.size).contentEquals(signed)) { "the signature does not cover its revision" }
+            Precheck.selfCheck(out, st.byteRange, cms, st.revIndex)
         } catch (e: Exception) {
-            throw EidPadesException.SelfValidationFailed("prior revisions: ${e.message}")
+            throw EidPadesException.SelfValidationFailed("output self-check: ${e.message}")
         }
         return Completed(
             pdf = out, cms = cms, docId = st.docId, outSha256 = Hex.encode(Cms.sha256(out)), inSha256 = st.inSha256,
             hasPage = st.hasPage, pageSha256 = st.pageSha256, signerCert = cert.raw, revIndex = st.revIndex,
-            sigRevSha256 = Hex.encode(Cms.sha256(signed)), priorCmsSha256 = st.priorCmsSha256,
-            priorRevisionSha256 = priorRev,
+            sigRevSha256 = Hex.encode(Cms.sha256(signed)), priorCmsSha256 = prior.map { it.first },
+            priorRevisionSha256 = prior.map { it.second }, fileName = st.fileName,
         )
     }
 
@@ -188,7 +199,7 @@ internal object Pades {
         val chain = ArrayList<Cert>()
         var cur = signer
         repeat(pool.size + 1) {
-            val next = pool.firstOrNull { it.rawSubject.contentEquals(cur.rawIssuer) && cur.signedBy(it) } ?: return@repeat
+            val next = pool.firstOrNull { cur.issuedBy(it) } ?: return@repeat
             chain += next
             cur = next
         }

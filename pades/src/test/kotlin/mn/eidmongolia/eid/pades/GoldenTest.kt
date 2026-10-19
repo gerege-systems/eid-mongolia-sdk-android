@@ -104,6 +104,7 @@ class GoldenTest {
             } ?: emptyList()
             assertEquals("$name priorRevisionSha256", wantPriorRev, res.priorRevisionSha256)
             assertEquals("$name outSha256", e.getString("outSha256"), res.outSha256)
+            checkRegistration(name, res, p.optString("fileName").ifEmpty { null })
             outputs[name] = res.pdf
             completed++
         }
@@ -120,6 +121,38 @@ class GoldenTest {
         } catch (x: EidPadesException) {
             assertEquals("visible without docId", "REQUEST_INVALID", x.code)
         }
+    }
+
+    /**
+     * [Completed.registration] = Go `pades.Registration`: fileName from prepare, pageSha256 only for revIndex 1, prior
+     * signatures only as priorCmsSha256 (never also as priorRevisionSha256 — the CA answers 400), signerEtsi.
+     */
+    private fun checkRegistration(name: String, done: Completed, fileName: String?) {
+        assertEquals("$name fileName", Pades.cleanFileName(fileName), done.fileName)
+        if (done.fileName == null || done.revIndex == 1 && !done.hasPage) {
+            try {
+                done.registration(Medium.TOKEN)
+                fail("$name: registration without fileName/page")
+            } catch (_: EidPadesException.RequestInvalid) {
+            }
+            return
+        }
+        val r = done.registration(Medium.PHONE, sessionId = "00000000-0000-4000-8000-000000000001")
+        assertEquals(name, done.docId, r.docID)
+        assertEquals(name, done.revIndex, r.revIndex)
+        assertEquals(name, done.fileName, r.fileName)
+        assertEquals(name, Base64Std.encode(done.cms), r.cms)
+        assertEquals(name, if (done.revIndex == 1) done.pageSha256 else null, r.pageSha256)
+        assertEquals(name, done.priorCmsSha256.ifEmpty { null }, r.priorCmsSha256)
+        assertEquals(name, null, r.priorRevisionSha256)
+        assertEquals(name, done.priorRevisionSha256, r.priorSignatures.map { it.revisionSha256 })
+        assertEquals(name, "PNOMN-00000000000", r.signerEtsi)
+        val json = JSONObject(r.toJson())
+        val want = mutableSetOf("docID", "revIndex", "medium", "sessionID", "cms", "fileName", "inSha256", "sigRevSha256", "outSha256", "signerEtsi")
+        want += if (done.revIndex == 1) "pageSha256" else "priorCmsSha256"
+        assertEquals(name, want, json.keySet())
+        assertEquals(name, "phone", json.getString("medium"))
+        assertEquals(name, done.fileName, json.getString("fileName"))
     }
 
     @Test

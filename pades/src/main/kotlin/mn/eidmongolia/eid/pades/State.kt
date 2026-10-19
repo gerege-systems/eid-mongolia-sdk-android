@@ -20,6 +20,8 @@ internal class PrepState(
     val claimedRole: String?,
     val priorCmsSha256: List<String>,
     val pdf: ByteArray,
+    /** Cleaned document name for the CA registration (Go `prepState.FileName`). */
+    val fileName: String? = null,
 ) {
     fun encode(): ByteArray {
         val h = JSONObject()
@@ -33,6 +35,7 @@ internal class PrepState(
         h.put("hasPage", hasPage)
         pageSha256?.takeIf { it.isNotEmpty() }?.let { h.put("pageSha256", it) }
         claimedRole?.takeIf { it.isNotEmpty() }?.let { h.put("claimedRole", it) }
+        fileName?.takeIf { it.isNotEmpty() }?.let { h.put("fileName", it) }
         h.put("preparedSha256", Hex.encode(Cms.sha256(pdf)))
         h.put("priorCmsSha256", JSONArray(priorCmsSha256))
         val head = h.toString().toByteArray(Charsets.UTF_8)
@@ -75,6 +78,7 @@ internal class PrepState(
                 claimedRole = h.optString("claimedRole").ifEmpty { null },
                 priorCmsSha256 = (0 until prior.length()).map { prior.getString(it) },
                 pdf = pdf,
+                fileName = h.optString("fileName").ifEmpty { null },
             )
             require(s.signedAttrs.isNotEmpty() && s.signerCert.isNotEmpty() && s.pdf.isNotEmpty() && s.revIndex >= 1) { "state incomplete" }
             return s

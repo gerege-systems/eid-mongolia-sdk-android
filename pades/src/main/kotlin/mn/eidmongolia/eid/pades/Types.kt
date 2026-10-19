@@ -74,14 +74,17 @@ class CompleteOptions(
 )
 
 /**
- * [EidPades.complete] output — everything the RP backend needs for `RegisterSignature` → CA `POST /pdf/signatures`
- * without re-parsing the PDF. Hashes are lowercase hex.
+ * [EidPades.complete] output. [registration] builds the CA `POST /pdf/signatures` body the RP backend posts as is (Go
+ * `pades.Registration` → `Client.PDF.RegisterSignature`, TS `registrationFromCompleted` → `registerSignature`).
+ * Hashes are lowercase hex.
  * @property pdf signed PAdES-BASELINE-LT document
  * @property cms the embedded CMS SignedData (DER)
  * @property pageSha256 document after the verify page, before the signature revision ([hasPage] only)
  * @property sigRevSha256 the signature revision (before DSS) — doc[:ByteRange end]
  * @property priorCmsSha256 earlier signatures' CMS DER sha256, document order
  * @property priorRevisionSha256 earlier signatures' revision sha256 (doc[:ByteRange end]), same order as [priorCmsSha256]
+ *   — informational; do not send both lists for the same signatures (the CA answers 400), use [registration]
+ * @property fileName [PrepareOptions.fileName] as cleaned by prepare (CA `cleanFileName`); null when not given or invalid
  */
 class Completed(
     val pdf: ByteArray,
@@ -96,4 +99,121 @@ class Completed(
     val sigRevSha256: String,
     val priorCmsSha256: List<String>,
     val priorRevisionSha256: List<String>,
-)
+    val fileName: String? = null,
+) {
+    /**
+     * The CA registration body for this signature (Go `pades.Registration`). Prior signatures go as `priorCmsSha256`
+     * only; [Registration.priorSignatures] keeps both keys for the 409 `PRIOR_MISMATCH` retry.
+     * @param sessionId the RAW_DIGEST_SIGNATURE session (required for [Medium.PHONE])
+     * @param onBehalfOf NTRMN-… (required when prepare had a claimedRole)
+     * @throws EidPadesException.RequestInvalid revIndex 1 without a verification page, or no valid fileName in prepare
+     */
+    fun registration(medium: Medium, sessionId: String? = null, onBehalfOf: String? = null): Registration {
+        if (revIndex == 1 && !hasPage) {
+            throw EidPadesException.RequestInvalid("the CA registers a first signature only with the verification page (PrepareOptions.verifyPage)")
+        }
+        val name = fileName?.takeIf { it.isNotEmpty() } ?: throw EidPadesException.RequestInvalid("fileName empty (PrepareOptions.fileName)")
+        val etsi = try {
+            Cert.parse(signerCert).subjectAttr(Cert.OID_SERIAL_NUMBER)
+        } catch (_: Exception) {
+            null
+        }
+        return Registration(
+            docID = docId, revIndex = revIndex, medium = medium, sessionID = sessionId?.takeIf { it.isNotEmpty() },
+            cms = Base64Std.encode(cms), fileName = name, inSha256 = inSha256,
+            pageSha256 = if (revIndex == 1) pageSha256 else null, sigRevSha256 = sigRevSha256, outSha256 = outSha256,
+            priorCmsSha256 = priorCmsSha256.takeIf { it.isNotEmpty() },
+            onBehalfOf = onBehalfOf?.takeIf { it.isNotEmpty() }, signerEtsi = etsi,
+            priorSignatures = if (priorRevisionSha256.size == priorCmsSha256.size) {
+                priorCmsSha256.zip(priorRevisionSha256) { c, r -> PriorSignature(c, r) }
+            } else {
+                emptyList()
+            },
+        )
+    }
+}
+
+/** `phone` (RP-API RAW_DIGEST_SIGNATURE session) | `token` (USB token). */
+enum class Medium(val wire: String) { PHONE("phone"), TOKEN("token") }
+
+/**
+ * One prior signature's two keys (Go `eid.PDFPriorSignature`): the CA knows a client-side row by its CMS hash and a
+ * CA-assembled (mode A) row by its revision hash — which one a prior signature is cannot be told from the file.
+ */
+class PriorSignature(val cmsSha256: String, val revisionSha256: String)
+
+/**
+ * Body of CA `POST /pdf/signatures` (CA `dto.PDFSignatureRegisterRequest`, Go `eid.PDFSignatureRegistration`, TS
+ * `RegisterSignatureInput`) — [toJson] gives the exact field names (the CA rejects unknown fields).
+ * @property cms CMS DER, standard base64
+ * @property pageSha256 only for revIndex 1
+ * @property priorRevisionSha256 prior CA-assembled (mode A) signatures by revision hash — null by default; on 409
+ *   `PRIOR_MISMATCH` move the matching [priorSignatures] from [priorCmsSha256] to here
+ * @property priorSignatures SDK-only (not in [toJson]): every prior signature's CMS and revision hash, document order
+ */
+data class Registration(
+    val docID: String,
+    val revIndex: Int,
+    val medium: Medium,
+    val sessionID: String?,
+    val cms: String,
+    val fileName: String,
+    val inSha256: String,
+    val pageSha256: String?,
+    val sigRevSha256: String,
+    val outSha256: String,
+    val priorCmsSha256: List<String>?,
+    val priorRevisionSha256: List<String>? = null,
+    val onBehalfOf: String?,
+    val signerEtsi: String?,
+    val priorSignatures: List<PriorSignature> = emptyList(),
+) {
+    /** JSON object; null / absent optional fields are omitted (Go `omitempty`). */
+    fun toJson(): String {
+        val sb = StringBuilder("{")
+        fun key(k: String) {
+            if (sb.length > 1) sb.append(',')
+            sb.append('"').append(k).append("\":")
+        }
+        fun str(k: String, v: String?) {
+            if (v == null) return
+            key(k)
+            jsonString(sb, v)
+        }
+        fun list(k: String, v: List<String>?) {
+            if (v.isNullOrEmpty()) return
+            key(k)
+            sb.append('[')
+            v.forEachIndexed { i, s -> if (i > 0) sb.append(','); jsonString(sb, s) }
+            sb.append(']')
+        }
+        str("docID", docID)
+        key("revIndex"); sb.append(revIndex)
+        str("medium", medium.wire)
+        str("sessionID", sessionID)
+        str("cms", cms)
+        str("fileName", fileName)
+        str("inSha256", inSha256)
+        str("pageSha256", pageSha256)
+        str("sigRevSha256", sigRevSha256)
+        str("outSha256", outSha256)
+        list("priorCmsSha256", priorCmsSha256)
+        list("priorRevisionSha256", priorRevisionSha256)
+        str("onBehalfOf", onBehalfOf)
+        str("signerEtsi", signerEtsi)
+        return sb.append('}').toString()
+    }
+
+    private fun jsonString(sb: StringBuilder, s: String) {
+        sb.append('"')
+        for (c in s) {
+            when {
+                c == '"' -> sb.append("\\\"")
+                c == '\\' -> sb.append("\\\\")
+                c < ' ' || c == ' ' || c == ' ' -> sb.append(String.format(java.util.Locale.ROOT, "\\u%04x", c.code))
+                else -> sb.append(c)
+            }
+        }
+        sb.append('"')
+    }
+}

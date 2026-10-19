@@ -25,13 +25,12 @@ internal object EidChain {
  */
 internal object Precheck {
     const val MAX_SIGNATURES = 16
-    private val ENCRYPT_KEY = Regex("/Encrypt\\s+\\d+\\s+\\d+\\s+R")
     const val VERIFY_URL = "https://ca.eidmongolia.mn/verify/"
     val UUID_RE = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
     class Result(val newDoc: Boolean, val revIndex: Int, val priorCmsSha256: List<String>)
 
-    private class SigDict(val obj: Int, val byteRange: List<Long>?, val subFilter: String?)
+    private class SigDict(val obj: Int, val byteRange: List<Long>?, val subFilter: String?, val type: String? = null)
 
     fun run(doc: ByteArray, issuers: List<Cert>): Result {
         if (encrypted(doc)) throw EidPadesException.PdfEncrypted("encrypted PDF is not supported")
@@ -63,26 +62,44 @@ internal object Precheck {
     }
 
     /**
-     * sha256(doc[:ByteRange end]) of every signature other than the one whose ByteRange is [own], object order — equals
-     * each prior signature's own sigRevSha256 (Go Completed.PriorRevisionSHA256, same order as priorCmsSha256).
+     * Light self-check of `complete`'s output (no full validator — Go runs the CA validator here): the document parses,
+     * its signature count (/Type /Sig or none) is [revIndex], the final Catalog has /DSS, and the signature whose
+     * ByteRange is [own] has exactly [cms] as /Contents and passes step 8 (covers its revision up to %%EOF,
+     * messageDigest and signature verify). Returns the prior signatures' (CMS sha256, revision sha256), object order —
+     * each revision hash = that signature's own sigRevSha256 (Go Completed.PriorRevisionSHA256).
      */
-    fun priorRevisionSha256(doc: ByteArray, own: LongArray): List<String> {
+    fun selfCheck(out: ByteArray, own: LongArray, cms: ByteArray, revIndex: Int): List<Pair<String, String>> {
+        val (sigs, flags) = scan(out)
+        require(flags.second) { "no /DSS" }
         val ownList = own.toList()
-        return scan(doc).first.filter { it.byteRange != ownList }.map { s ->
-            val br = s.byteRange
-            require(br != null && br.size == 4 && br[2] + br[3] <= doc.size) { "ByteRange" }
-            val h = java.security.MessageDigest.getInstance("SHA-256")
-            h.update(doc, 0, (br[2] + br[3]).toInt())
-            Hex.encode(h.digest())
+        val cmsHex = Hex.encode(Cms.sha256(cms))
+        var found = false
+        var count = 0
+        val prior = ArrayList<Pair<String, String>>()
+        for (s in sigs) {
+            if (s.type != null && s.type != "Sig") continue
+            count++
+            val c = checkPriorSignature(out, s)
+            if (s.byteRange == ownList) {
+                require(!found && c.cmsSha256 == cmsHex) { "the new signature is not the prepared one" }
+                found = true
+            } else {
+                val br = s.byteRange!!
+                val h = java.security.MessageDigest.getInstance("SHA-256")
+                h.update(out, 0, (br[2] + br[3]).toInt())
+                prior += c.cmsSha256 to Hex.encode(h.digest())
+            }
         }
+        require(found && count == revIndex) { "signature count " + count + ", want " + revIndex }
+        return prior
     }
 
-    /** Step 4: /Encrypt in the trailer; when the parser cannot open the file, the `/Encrypt n g R` byte pattern. */
+    /** Step 4: /Encrypt in the trailer; when the parser cannot open the file, `/Encrypt n g R` or `/Encrypt <<` in the bytes. */
     private fun encrypted(doc: ByteArray): Boolean = try {
         val r = PdfReader.open(doc)
         !r.trailer["Encrypt"].isNull
     } catch (_: Exception) {
-        ENCRYPT_KEY.containsMatchIn(String(doc, Charsets.ISO_8859_1))
+        Structure.hasEncryptRef(doc)
     }
 
     private class Checked(val leaf: Cert, val stamped: Boolean, val cmsSha256: String)
@@ -103,7 +120,7 @@ internal object Precheck {
             val brItems = (r.get(v.d, "ByteRange") as? PdfObj.Arr)?.items?.map { r.resolve(it) }
             val br = if (brItems != null && brItems.all { it is PdfObj.Int }) brItems.map { (it as PdfObj.Int).v } else null
             if (docMdpP1(r, v.d)) locked = true
-            sigs += SigDict(id, br, r.get(v.d, "SubFilter").name)
+            sigs += SigDict(id, br, r.get(v.d, "SubFilter").name, r.get(v.d, "Type").name)
         }
         sigs.sortBy { it.obj }
         return sigs to (locked to hasDss)

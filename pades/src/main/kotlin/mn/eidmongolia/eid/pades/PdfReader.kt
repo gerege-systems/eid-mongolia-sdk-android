@@ -306,6 +306,24 @@ internal class PdfReader private constructor(
         return PdfObj.Stream(o.d, start, e)
     }
 
+    /**
+     * The dictionary of object [id] at [off] without resolving anything (no /Length lookup) and whether a stream follows
+     * — for the object-stream graph check ([Structure]). null when it does not parse.
+     */
+    fun rawHeader(off: Int, id: Int): Pair<PdfDict, Boolean>? = try {
+        val lx = PdfLexer(bytes, off)
+        if (off < 0 || off >= bytes.size || lx.word()?.toIntOrNull() != id || lx.word()?.toIntOrNull() == null) {
+            null
+        } else {
+            lx.expect("obj")
+            val d = (lx.parseObject() as? PdfObj.Dict)?.d
+            lx.skipWhite()
+            d?.let { it to (lx.peekWord(lx.pos)?.first == "stream") }
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     private fun objectFromStream(stm: Int, index: Int, id: Int): PdfObj {
         val entry = objStmCache.getOrPut(stm) {
             val s = obj(PdfRef(stm, 0))

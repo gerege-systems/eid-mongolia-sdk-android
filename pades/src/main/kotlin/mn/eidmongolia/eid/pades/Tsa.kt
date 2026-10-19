@@ -9,7 +9,9 @@ import java.util.TimeZone
 internal object Asn1Time {
     fun parse(t: Der.Tlv): Date {
         val s = String(t.value(), Charsets.US_ASCII)
-        val m = Regex("^(\\d{2,4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})?(?:[.,](\\d+))?(Z|[+-]\\d{4})$").matchEntire(s)
+        // UTCTime YY, GeneralizedTime YYYY (a greedy \d{2,4} read UTCTime "261014…" as year 2610 — CRL thisUpdate).
+        val yy = if (t.tag == Der.UTC_TIME) "\\d{2}" else "\\d{4}"
+        val m = Regex("^($yy)(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})?(?:[.,](\\d+))?(Z|[+-]\\d{4})$").matchEntire(s)
             ?: throw IllegalArgumentException("ASN.1 time $s")
         val g = m.groupValues
         var year = g[1].toInt()
@@ -70,21 +72,28 @@ internal object Tsa {
     }
 }
 
-/** Minimal path validation (Go x509 Verify subset): signatures + validity at [at] up to a trust anchor. */
+/**
+ * Minimal path validation — Go `x509.Verify` (verifyTSAChain, KeyUsages timeStamping): subject/issuer + signature, every
+ * certificate valid at [at], each issuer a CA allowed to sign certificates (cA + keyCertSign; intermediates must carry
+ * basicConstraints), pathLenConstraint and the EKU of every issuer (empty, anyExtendedKeyUsage or timeStamping).
+ */
 internal object Chain {
     fun verify(leaf: Cert, roots: List<Cert>, pool: List<Cert>, at: Date): Boolean {
+        fun ekuOk(c: Cert) = c.extKeyUsage.let { it.isEmpty() || Cert.OID_ANY_EKU in it || Cert.OID_KP_TIMESTAMPING in it }
         var cur = leaf
+        var below = 0 // CA certificates between the leaf and the next issuer (Go numIntermediates)
         val used = HashSet<Cert>()
         repeat(8) {
-            if (!valid(cur, at)) return false
+            if (!cur.validAt(at)) return false
             if (roots.any { it == cur }) return true
-            roots.firstOrNull { cur.issuedBy(it) }?.let { return valid(it, at) }
-            val next = pool.firstOrNull { it != cur && it !in used && cur.issuedBy(it) } ?: return false
+            if (roots.any { cur.issuedBy(it) && it.validAt(at) && it.allowsPath(below) && ekuOk(it) }) return true
+            val next = pool.firstOrNull {
+                it != cur && it !in used && cur.issuedBy(it) && it.isCa && it.allowsPath(below) && ekuOk(it)
+            } ?: return false
             used += cur
             cur = next
+            below++
         }
         return false
     }
-
-    private fun valid(c: Cert, at: Date) = !at.before(c.x509.notBefore) && !at.after(c.x509.notAfter)
 }

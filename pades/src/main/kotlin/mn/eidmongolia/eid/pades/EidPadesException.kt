@@ -5,6 +5,10 @@ package mn.eidmongolia.eid.pades
  * апп логик/телеметрийг үүгээр салаалуулна, [message]-ээр биш. iOS `GeregeEIDPDF.PadesError`-тэй 1:1.
  */
 sealed class EidPadesException(val code: String, message: String) : Exception(message) {
+    /** TSA_UNAVAILABLE / LTV_UNAVAILABLE (түр — ижил state + гарын үсгээр `complete`-ийг дахин дуудна), цуцлагдсан гэрчилгээнээс бусад. */
+    val retryable: Boolean
+        get() = this is TsaUnavailable || (this is LtvUnavailable && !certificateRevoked)
+
     class PdfInvalid(message: String) : EidPadesException("PDF_INVALID", message)
     class PdfEncrypted(message: String) : EidPadesException("PDF_ENCRYPTED", message)
     /** DocMDP P=1 — баримт цааш гарын үсэг зөвшөөрөхгүй. */
@@ -24,8 +28,11 @@ sealed class EidPadesException(val code: String, message: String) : Exception(me
     class SignatureInvalid(message: String) : EidPadesException("SIGNATURE_INVALID", message)
     /** TSA хүрэхгүй — ижил state-ээр дахин оролдож болно. */
     class TsaUnavailable(message: String) : EidPadesException("TSA_UNAVAILABLE", message)
-    /** OCSP/CRL авч чадсангүй — ижил state-ээр дахин оролдож болно. */
-    class LtvUnavailable(message: String) : EidPadesException("LTV_UNAVAILABLE", message)
+    /**
+     * OCSP/CRL авч чадсангүй — ижил state-ээр дахин оролдож болно. [certificateRevoked] = гинжийн гэрчилгээ (иргэн, олгогч,
+     * TSA) олгогчийн гарын үсэгтэй OCSP/CRL-ээр цуцлагдсан (Go `pades.ErrCertificateRevoked`) — эцсийн, дахин оролдохгүй.
+     */
+    class LtvUnavailable(message: String, val certificateRevoked: Boolean = false) : EidPadesException("LTV_UNAVAILABLE", message)
     class SelfValidationFailed(message: String) : EidPadesException("SELF_VALIDATION_FAILED", message)
     class PlaceholderOverflow(message: String) : EidPadesException("PLACEHOLDER_OVERFLOW", message)
     class StateInvalid(message: String) : EidPadesException("STATE_INVALID", message)

@@ -24,7 +24,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.2.0")
+    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.3.0")
 }
 ```
 
@@ -42,8 +42,9 @@ val prepared = EidPades.prepare(pdf, PrepareOptions(signerCert = signCertDer, ve
 // 2) TSA + OCSP/CRL + DSS (suspend — IO dispatcher дээр ажиллана)
 val done = EidPades.complete(prepared.state, signature)
 // done.pdf, done.cms, done.docId, done.outSha256, done.inSha256, done.hasPage, done.pageSha256,
-// done.revIndex, done.sigRevSha256, done.priorCmsSha256, done.signerCert
-// → RP backend нь гарын үсгийг eID-д бүртгэнэ (POST /pdf/signatures)
+// done.revIndex, done.sigRevSha256, done.priorCmsSha256, done.signerCert, done.fileName
+val body = done.registration(Medium.PHONE, sessionId = sessionId).toJson()
+// → RP backend нь body-г eID-д ЯГ ХЭВЭЭР бүртгэнэ (POST /pdf/signatures)
 ```
 
 - `prepare`: урьдчилсан шалгуур (шифрлэлт, DocMDP P=1, өмнөх гарын үсэг, ≤ 16), эхний eID гарын үсэгт
@@ -53,6 +54,7 @@ val done = EidPades.complete(prepared.state, signature)
   OCSP/CRL → DSS revision. `CompleteOptions.transport` — өөрийн HTTP (proxy г.м.).
 - Алдаа: `EidPadesException.code` — бүх SDK-д ижил тогтвортой код (`PDF_INVALID`, `PDF_ENCRYPTED`, `PDF_LOCKED`,
   `PDF_FOREIGN_SIGNATURE`, `SIGNATURE_INVALID`, `TSA_UNAVAILABLE`, `LTV_UNAVAILABLE`, `STATE_INVALID`, …).
+  `retryable` — TSA/LTV түр алдаа; `LtvUnavailable.certificateRevoked` — гинжийн гэрчилгээ цуцлагдсан (эцсийн).
 - `INTERNET` зөвшөөрлийг сангийн manifest өөрөө нэмнэ.
 - Бүрэн validator энэ санд байхгүй — шалгалтыг backend-д Go SDK-ээр хийнэ.
 
@@ -87,5 +89,5 @@ returns a 32-byte DTBS to be signed by the citizen's phone or USB token; `comple
 RFC 3161 timestamp, OCSP/CRL and DSS (PAdES B-LT). Output is byte-identical to the Go reference
 (`gerege-systems/eid-mongolia-sdk-go`, profile `pades-client/1`), enforced by golden vectors in CI. Install from
 JitPack: add `maven("https://jitpack.io")` and
-`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.2.0")` (use the latest tag). This repository is a read-only mirror;
+`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.3.0")` (use the latest tag). This repository is a read-only mirror;
 please file issues here.
