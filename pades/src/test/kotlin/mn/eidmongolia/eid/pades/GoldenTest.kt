@@ -118,6 +118,7 @@ class GoldenTest {
             val wantPriorRev = revisions(c.getString("input"))
             assertEquals("$name priorRevisionSha256", wantPriorRev, res.priorRevisionSha256)
             assertEquals("$name outSha256", e.getString("outSha256"), res.outSha256)
+            assertEquals("$name claimedRole", p.optString("claimedRole").ifEmpty { null }, res.claimedRole)
             checkRegistration(name, res, p.optString("fileName").ifEmpty { null })
             outputs[name] = res.pdf
             completed++
@@ -151,7 +152,26 @@ class GoldenTest {
             }
             return
         }
-        val r = done.registration(Medium.PHONE, sessionId = "00000000-0000-4000-8000-000000000001")
+        val sid = "00000000-0000-4000-8000-000000000001"
+        val obo = if (done.claimedRole == null) null else "NTRMN-1234567"
+        // medium inferred from sessionId (CA pairing); inconsistent pairs fail fast.
+        assertEquals(name, Medium.TOKEN, done.registration(onBehalfOf = obo).medium)
+        assertEquals(name, Medium.PHONE, done.registration(sessionId = sid, onBehalfOf = obo).medium)
+        for (bad in listOf({ done.registration(Medium.PHONE, onBehalfOf = obo) }, { done.registration(Medium.TOKEN, sid, obo) })) {
+            try {
+                bad()
+                fail("$name: inconsistent medium/sessionId")
+            } catch (_: EidPadesException.RequestInvalid) {
+            }
+        }
+        if (done.claimedRole != null) {
+            try {
+                done.registration(sessionId = sid)
+                fail("$name: claimedRole without onBehalfOf")
+            } catch (_: EidPadesException.RequestInvalid) {
+            }
+        }
+        val r = done.registration(Medium.PHONE, sessionId = sid, onBehalfOf = obo)
         assertEquals(name, done.docId, r.docID)
         assertEquals(name, done.revIndex, r.revIndex)
         assertEquals(name, done.fileName, r.fileName)
@@ -164,6 +184,7 @@ class GoldenTest {
         val json = JSONObject(r.toJson())
         val want = mutableSetOf("docID", "revIndex", "medium", "sessionID", "cms", "fileName", "inSha256", "sigRevSha256", "outSha256", "signerEtsi")
         want += if (done.revIndex == 1) "pageSha256" else "priorCmsSha256"
+        if (obo != null) want += "onBehalfOf"
         assertEquals(name, want, json.keySet())
         assertEquals(name, "phone", json.getString("medium"))
         assertEquals(name, done.fileName, json.getString("fileName"))

@@ -15,17 +15,50 @@ fun interface EidPadesTransport {
     fun send(method: String, url: String, contentType: String?, body: ByteArray?): ByteArray
 }
 
-/** Go fetch.go defaultHTTPClient: 10 s timeout, no redirects, 200 only, ≤ 4 MiB. */
+/**
+ * Go fetch.go defaultHTTPClient: 10 s TOTAL per request (connect + send + headers + body — Go `http.Client.Timeout`,
+ * not a per-read idle timeout), no redirects, 200 only, ≤ 4 MiB. The exchange runs on a daemon worker and the caller
+ * waits at most the deadline: a server trickling bytes cannot hold `complete` past it (`HttpURLConnection.disconnect`
+ * alone does not reliably abort a blocked read, so the caller does not wait on it; the worker still ends at its own
+ * read timeout).
+ */
 internal object DefaultHttp : EidPadesTransport {
-    private const val TIMEOUT_MS = 10_000
+    private const val TIMEOUT_MS = 10_000L
     const val MAX_RESPONSE = 4 shl 20
 
-    override fun send(method: String, url: String, contentType: String?, body: ByteArray?): ByteArray {
+    private val workers = java.util.concurrent.Executors.newCachedThreadPool { r ->
+        Thread(r, "eid-pades-http").apply { isDaemon = true }
+    }
+
+    override fun send(method: String, url: String, contentType: String?, body: ByteArray?): ByteArray =
+        send(method, url, contentType, body, TIMEOUT_MS)
+
+    /** [timeoutMs] — the whole request's deadline (tests use a short one). */
+    internal fun send(method: String, url: String, contentType: String?, body: ByteArray?, timeoutMs: Long): ByteArray {
         val c = URL(url).openConnection() as HttpURLConnection
+        val job = workers.submit(java.util.concurrent.Callable { exchange(c, method, url, contentType, body, timeoutMs) })
         try {
+            return job.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            job.cancel(true)
+            c.disconnect()
+            throw java.net.SocketTimeoutException("$url: timeout after $timeoutMs ms")
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw e.cause as? IOException ?: IOException("$url: ${e.cause}", e.cause)
+        } catch (e: InterruptedException) {
+            job.cancel(true)
+            c.disconnect()
+            Thread.currentThread().interrupt()
+            throw java.io.InterruptedIOException("$url: interrupted").apply { initCause(e) }
+        }
+    }
+
+    private fun exchange(c: HttpURLConnection, method: String, url: String, contentType: String?, body: ByteArray?, timeoutMs: Long): ByteArray {
+        try {
+            val t = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             c.instanceFollowRedirects = false
-            c.connectTimeout = TIMEOUT_MS
-            c.readTimeout = TIMEOUT_MS
+            c.connectTimeout = t
+            c.readTimeout = t
             c.requestMethod = method
             contentType?.let { c.setRequestProperty("Content-Type", it) }
             if (body != null) {
@@ -39,6 +72,7 @@ internal object DefaultHttp : EidPadesTransport {
             c.inputStream.use { inp ->
                 val buf = ByteArray(16 shl 10)
                 while (true) {
+                    if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("$url: cancelled")
                     val n = inp.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)

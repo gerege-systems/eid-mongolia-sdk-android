@@ -24,7 +24,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.5.0")
+    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.6.0")
 }
 ```
 
@@ -36,14 +36,18 @@ dependencies {
 import mn.eidmongolia.eid.pades.*
 
 // 1) Сүлжээгүй: PDF-ийг бэлдэж DTBS гаргана
-val prepared = EidPades.prepare(pdf, PrepareOptions(signerCert = signCertDer, verifyPage = true))
+// verifyPage = true бол fileName заавал (эс бөгөөс REQUEST_INVALID); эхний eID гарын үсгийг CA зөвхөн хуудастай бүртгэнэ
+val prepared = EidPades.prepare(pdf, PrepareOptions(signerCert = signCertDer, verifyPage = true, fileName = "Гэрээ №1.pdf"))
 // prepared.state-ийг хадгалж болно; prepared.dtbs-ийг (32 байт) утас/токеноор гарын үсэглүүлнэ
 
 // 2) TSA + OCSP/CRL + DSS (suspend — IO dispatcher дээр ажиллана)
 val done = EidPades.complete(prepared.state, signature)
 // done.pdf, done.cms, done.docId, done.outSha256, done.inSha256, done.hasPage, done.pageSha256,
-// done.revIndex, done.sigRevSha256, done.priorCmsSha256, done.signerCert, done.fileName
+// done.revIndex, done.sigRevSha256, done.priorCmsSha256, done.priorRevisionSha256, done.signerCert, done.fileName,
+// done.claimedRole
 val body = done.registration(Medium.PHONE, sessionId = sessionId).toJson()
+// medium-ийг орхивол sessionId-аас: байвал Medium.PHONE, үгүй бол Medium.TOKEN (CA-ийн хос). Medium.PHONE + sessionId-гүй,
+// Medium.TOKEN + sessionId, эсвэл claimedRole-той prepare + onBehalfOf-гүй → REQUEST_INVALID (CA руу явахгүй).
 // → RP backend нь body-г eID-д ЯГ ХЭВЭЭР бүртгэнэ (POST /pdf/signatures)
 ```
 
@@ -51,10 +55,28 @@ val body = done.registration(Medium.PHONE, sessionId = sessionId).toJson()
   `verifyPage = true` бол баталгаажуулалтын (QR) хуудас (`lang`: `mn` анхдагч / `en`; NotoSans subset фонт, OFL),
   гарын үсгийн revision, signedAttrs (+ `claimedRole`) → DTBS.
 - `complete`: иргэний гарын үсгийг DTBS дээр шалгана (RSA PKCS#1 v1.5, ECDSA) → RFC 3161 → CMS → embed →
-  OCSP/CRL → DSS revision. `CompleteOptions.transport` — өөрийн HTTP (proxy г.м.).
+  OCSP/CRL → DSS revision. `CompleteOptions.transport` — өөрийн HTTP (proxy г.м.); анхдагч нь HttpURLConnection
+  (10 с нийт deadline, redirect-гүй, ≤ 4 MiB).
+- **Харагдах гарын үсэг** (сонголттой, Go `APPEARANCE_SPEC.md`): `PrepareOptions(…, appearance = SignatureAppearance(page = 0,
+  x = 36.0, y = 36.0, width = 220.0, height = 64.0))` — pt, хуудасны харагдах (`/Rotate`-ийн дараах) зүүн доод булангаас;
+  `page` 0 = оролтын eID verify хуудас **биш** сүүлийн хуудас (өмнөх гарын үсгүүдийн verify хуудсыг алгасна;
+  `PLACEMENT_SPEC.md` §1a), 1… тодорхой дугаар хэвээр. Өндөр ≥ 45 pt; хуудаснаас гарах, бичвэр багтахгүй бол
+  `REQUEST_INVALID`. null = үл харагдах.
+- **Тамганы байрлал** (Go `PLACEMENT_SPEC.md`): `x/y` нь хүссэн байрлал — хуудасны агуулгатай (4 pt зайтай) давхцвал
+  эхний чөлөөт байрлал руу шилжинэ (толин багана ижил өндөрт → хүссэн баганаар 12 pt-ээр дээш → толин баганаар дээш).
+  `prepared.placement` (`page`, `x`, `y`, `width`, `height` — pt; `status`: `PlacementStatus.REQUESTED` | `MOVED` |
+  `OVERLAP` — чөлөөт газар алга, хүссэн байрлалд | `UNSCANNED` — хуудсыг хязгаарт уншиж чадсангүй, хүссэн байрлалд).
+  `OVERLAP` / `UNSCANNED`-ийг хэрэглэгчид мэдэгдэх нь зүйтэй — гарын үсэг аль ч тохиолдолд хүчинтэй.
+- `registration(medium, sessionId, onBehalfOf)` — өмнөх гарын үсгүүдийг зөвхөн `priorCmsSha256`-аар (хоёр жагсаалтыг
+  зэрэг илгээвэл CA 400). 409 `PRIOR_MISMATCH` бол `priorSignatures`-ийн тохирохыг `priorRevisionSha256` руу шилжүүлж
+  дахин илгээнэ (CA угсарсан, горим A). revIndex 1 хуудасгүй, `fileName`-гүй, `medium` ↔ `sessionId` зөрчилтэй (phone-д sessionId заавал, token-д
+  алга; `medium` орхивол sessionId-аас), эсвэл `claimedRole`-той prepare-д `onBehalfOf` (NTRMN-…) хоосон бол `RequestInvalid`.
+- Бүтцийн шалгалт (Go `PRECHECKS.md` #2a/#2b): давхарлалт > 256, ObjStm мөчлөг, `/Extends` > 64, `/Size` > 2^21 →
+  `PDF_INVALID` (`complete`-д — `STATE_INVALID`).
 - Алдаа: `EidPadesException.code` — бүх SDK-д ижил тогтвортой код (`PDF_INVALID`, `PDF_ENCRYPTED`, `PDF_LOCKED`,
   `PDF_FOREIGN_SIGNATURE`, `SIGNATURE_INVALID`, `TSA_UNAVAILABLE`, `LTV_UNAVAILABLE`, `STATE_INVALID`, …).
-  `retryable` — TSA/LTV түр алдаа; `LtvUnavailable.certificateRevoked` — гинжийн гэрчилгээ цуцлагдсан (эцсийн).
+  `retryable` — TSA/LTV түр алдаа (ижил state-ээр дахин); `LtvUnavailable.certificateRevoked` — гинжийн гэрчилгээ
+  олгогчийн гарын үсэгтэй OCSP/CRL-ээр цуцлагдсан (эцсийн — `retryable = false`).
 - `INTERNET` зөвшөөрлийг сангийн manifest өөрөө нэмнэ.
 - Бүрэн validator энэ санд байхгүй — шалгалтыг backend-д Go SDK-ээр хийнэ.
 
@@ -89,5 +111,5 @@ returns a 32-byte DTBS to be signed by the citizen's phone or USB token; `comple
 RFC 3161 timestamp, OCSP/CRL and DSS (PAdES B-LT). Output is byte-identical to the Go reference
 (`gerege-systems/eid-mongolia-sdk-go`, profile `pades-client/1`), enforced by golden vectors in CI. Install from
 JitPack: add `maven("https://jitpack.io")` and
-`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.5.0")` (use the latest tag). This repository is a read-only mirror;
+`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.6.0")` (use the latest tag). This repository is a read-only mirror;
 please file issues here.

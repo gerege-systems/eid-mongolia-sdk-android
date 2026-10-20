@@ -6,7 +6,7 @@ import kotlinx.coroutines.withContext
 /**
  * eID client-side PAdES — the PDF never reaches an eID server (docs/PADES_CLIENT_SIDE.md). Native Kotlin
  * implementation of the signing path, byte-identical to the Go reference (`eid-mongolia-sdk-go/pades`, profile
- * `pades-client/1`) on the shared golden vectors; iOS `GeregeEIDPDF.EidPades` 1:1.
+ * `pades-client/1`) on the shared golden vectors; iOS `GeregeEIDPades.EidPades` 1:1.
  *
  * Flow: [prepare] → have `Prepared.dtbs` signed via an RP-API signature session (RAW_DIGEST_SIGNATURE) on the phone or
  * token → [complete] (RFC 3161 TSA + OCSP/CRL over the network, DSS) → register [Completed] through the RP backend

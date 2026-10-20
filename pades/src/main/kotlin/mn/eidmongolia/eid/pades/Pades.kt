@@ -161,6 +161,7 @@ internal object Pades {
             hasPage = st.hasPage, pageSha256 = st.pageSha256, signerCert = cert.raw, revIndex = st.revIndex,
             sigRevSha256 = Hex.encode(Cms.sha256(signed)), priorCmsSha256 = prior.map { it.first },
             priorRevisionSha256 = prior.map { it.second }, fileName = st.fileName,
+            claimedRole = st.claimedRole?.takeIf { it.isNotEmpty() },
         )
     }
 

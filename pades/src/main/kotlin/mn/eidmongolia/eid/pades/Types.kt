@@ -3,7 +3,7 @@ package mn.eidmongolia.eid.pades
 import java.util.Date
 
 /**
- * [EidPades.prepare] input — Go reference `pades.PrepareOptions` (iOS `GeregeEIDPDF.PrepareOptions` 1:1).
+ * [EidPades.prepare] input — Go reference `pades.PrepareOptions` (iOS `EidPades.PrepareOptions` 1:1).
  *
  * @param signerCert citizen SIGN certificate DER (signingCertificateV2)
  * @param chain issuer chain DER (04, 03, 02); empty → built from the embedded eID chain
@@ -14,7 +14,7 @@ import java.util.Date
  * @param docId verify page / QR UUID (lowercase); null → generated for a new document, read from the page otherwise
  * @param verifyPage append the verification (QR) page — only for a document without signatures
  * @param fileName name shown on the page (required with [verifyPage]; NFC, ≤ 120 characters)
- * @param lang page language "mn" | "en"; null → reference default
+ * @param lang page language "mn" | "en"; null/empty → "mn"
  * @param appearance visible signature (APPEARANCE_SPEC.md); null → invisible (default, byte-identical to before)
  */
 class PrepareOptions(
@@ -96,7 +96,7 @@ enum class PlacementStatus(val wire: String) {
  * [EidPades.complete] input.
  * @param tsaUrl RFC 3161 TSA; null → `https://tsa.timeserver.mn/`
  * @param roots trust anchors DER (TSA chain); empty → Mongolian National Root CA (other values: sandbox/tests)
- * @param transport HTTP for TSA / OCSP / CRL; null → HttpURLConnection, 10 s timeout, no redirects
+ * @param transport HTTP for TSA / OCSP / CRL; null → HttpURLConnection, 10 s total deadline per request (Go), no redirects
  */
 class CompleteOptions(
     val tsaUrl: String? = null,
@@ -116,6 +116,8 @@ class CompleteOptions(
  * @property priorRevisionSha256 earlier signatures' revision sha256 (doc[:ByteRange end]), same order as [priorCmsSha256]
  *   — informational; do not send both lists for the same signatures (the CA answers 400), use [registration]
  * @property fileName [PrepareOptions.fileName] as cleaned by prepare (CA `cleanFileName`); null when not given or invalid
+ * @property claimedRole [PrepareOptions.claimedRole] carried through the state; null for a personal signature —
+ *   [registration] then requires `onBehalfOf` (the CA rejects a claimed role without an organisation)
  */
 class Completed(
     val pdf: ByteArray,
@@ -131,30 +133,43 @@ class Completed(
     val priorCmsSha256: List<String>,
     val priorRevisionSha256: List<String>,
     val fileName: String? = null,
+    val claimedRole: String? = null,
 ) {
     /**
      * The CA registration body for this signature (Go `pades.Registration`). Prior signatures go as `priorCmsSha256`
      * only; [Registration.priorSignatures] keeps both keys for the 409 `PRIOR_MISMATCH` retry.
-     * @param sessionId the RAW_DIGEST_SIGNATURE session (required for [Medium.PHONE])
-     * @param onBehalfOf NTRMN-… (required when prepare had a claimedRole)
-     * @throws EidPadesException.RequestInvalid revIndex 1 without a verification page, or no valid fileName in prepare
+     * @param medium null = inferred the way the CA pairs them: [sessionId] given → [Medium.PHONE], else [Medium.TOKEN]
+     * @param sessionId the RAW_DIGEST_SIGNATURE session (required for [Medium.PHONE], absent for [Medium.TOKEN])
+     * @param onBehalfOf NTRMN-… (required when prepare had a [claimedRole])
+     * @throws EidPadesException.RequestInvalid revIndex 1 without a verification page, no valid fileName in prepare,
+     *   [Medium.PHONE] without [sessionId], [Medium.TOKEN] with [sessionId], or [claimedRole] without [onBehalfOf]
      */
-    fun registration(medium: Medium, sessionId: String? = null, onBehalfOf: String? = null): Registration {
+    fun registration(medium: Medium? = null, sessionId: String? = null, onBehalfOf: String? = null): Registration {
         if (revIndex == 1 && !hasPage) {
             throw EidPadesException.RequestInvalid("the CA registers a first signature only with the verification page (PrepareOptions.verifyPage)")
         }
         val name = fileName?.takeIf { it.isNotEmpty() } ?: throw EidPadesException.RequestInvalid("fileName empty (PrepareOptions.fileName)")
+        val session = sessionId?.takeIf { it.isNotEmpty() }
+        val m = medium ?: if (session != null) Medium.PHONE else Medium.TOKEN
+        if (m == Medium.PHONE && session == null) {
+            throw EidPadesException.RequestInvalid("medium phone requires sessionId (the RAW_DIGEST_SIGNATURE session)")
+        }
+        if (m == Medium.TOKEN && session != null) throw EidPadesException.RequestInvalid("medium token takes no sessionId")
+        val obo = onBehalfOf?.takeIf { it.isNotEmpty() }
+        if (!claimedRole.isNullOrEmpty() && obo == null) {
+            throw EidPadesException.RequestInvalid("claimedRole was prepared: onBehalfOf (NTRMN-…) is required")
+        }
         val etsi = try {
             Cert.parse(signerCert).subjectAttr(Cert.OID_SERIAL_NUMBER)
         } catch (_: Exception) {
             null
         }
         return Registration(
-            docID = docId, revIndex = revIndex, medium = medium, sessionID = sessionId?.takeIf { it.isNotEmpty() },
+            docID = docId, revIndex = revIndex, medium = m, sessionID = session,
             cms = Base64Std.encode(cms), fileName = name, inSha256 = inSha256,
             pageSha256 = if (revIndex == 1) pageSha256 else null, sigRevSha256 = sigRevSha256, outSha256 = outSha256,
             priorCmsSha256 = priorCmsSha256.takeIf { it.isNotEmpty() },
-            onBehalfOf = onBehalfOf?.takeIf { it.isNotEmpty() }, signerEtsi = etsi,
+            onBehalfOf = obo, signerEtsi = etsi,
             priorSignatures = if (priorRevisionSha256.size == priorCmsSha256.size) {
                 priorCmsSha256.zip(priorRevisionSha256) { c, r -> PriorSignature(c, r) }
             } else {

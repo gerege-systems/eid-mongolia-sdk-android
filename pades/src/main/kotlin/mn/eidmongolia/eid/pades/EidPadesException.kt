@@ -2,7 +2,7 @@ package mn.eidmongolia.eid.pades
 
 /**
  * Core-ийн тогтвортой алдааны кодууд (Go `pades/errors.go`). [code] нь Go/WASM/.NET/Swift-тэй ИЖИЛ мөр —
- * апп логик/телеметрийг үүгээр салаалуулна, [message]-ээр биш. iOS `GeregeEIDPDF.PadesError`-тэй 1:1.
+ * апп логик/телеметрийг үүгээр салаалуулна, [message]-ээр биш. iOS `GeregeEIDPades.EidPadesError`-тэй 1:1.
  */
 sealed class EidPadesException(val code: String, message: String) : Exception(message) {
     /** TSA_UNAVAILABLE / LTV_UNAVAILABLE (түр — ижил state + гарын үсгээр `complete`-ийг дахин дуудна), цуцлагдсан гэрчилгээнээс бусад. */
