@@ -17,6 +17,8 @@ internal object Appearance {
         val date: String,
         /** https://ca.eidmongolia.mn/verify/<docId>/<revIndex> */
         val url: String,
+        /** PLACEMENT_SPEC §6a: never move the stamp; the scan only reports OVERLAP. */
+        val exact: Boolean = false,
     )
 
     /** Form XObject input: displayed (post-rotation) width/height in h100, page /Rotate 0|90|180|270. */
@@ -242,7 +244,20 @@ internal object Appearance {
      */
     fun defaultStampPage(doc: ByteArray, verifyUri: String): Pair<Int, Int> {
         val inc = Incremental(doc)
-        val rd = inc.reader
+        val pages = pageList(inc.reader, inc.root["Pages"])
+        return lastContentPage(inc.reader, pages, verifyUri) to pages.size
+    }
+
+    /** The last page (1-based) of [pages] that is not an eID verify page of [verifyUri] ("" = none skipped); all verify pages → the page count. */
+    private fun lastContentPage(rd: PdfReader, pages: List<PdfDict>, verifyUri: String): Int {
+        for (i in pages.size - 1 downTo 0) {
+            if (verifyUri.isEmpty() || !isVerifyPage(rd, pages[i], verifyUri)) return i + 1
+        }
+        return pages.size
+    }
+
+    /** Go `pageList`: the /Page dictionaries in /Pages tree order (depth ≤ 32, at most 65 537). */
+    private fun pageList(rd: PdfReader, root: PdfObj): List<PdfDict> {
         val pages = ArrayList<PdfDict>()
         fun walk(v: PdfObj, depth: Int) {
             if (depth > MAX_DEPTH || pages.size > (1 shl 16)) return
@@ -252,12 +267,38 @@ internal object Appearance {
                 "Pages" -> (rd.get(d, "Kids") as? PdfObj.Arr)?.items?.forEach { walk(it, depth + 1) }
             }
         }
-        walk(inc.root["Pages"], 0)
+        walk(root, 0)
+        return pages
+    }
+
+    /** [suggest]'s result: resolved page, the choice, and every page's visible (w, h) in h100 (null = geometry unreadable). */
+    class Suggested(val page: Int, val result: StampPlacement.Result, val sizes: List<Pair<Long, Long>?>)
+
+    /**
+     * Go `core.SuggestVisible` (PLACEMENT_SPEC §6b): the placement [SignatureRevision.prepare] would choose, without
+     * writing anything. [page] 0 → the last page that is not a verify page of [verifyUri] ("" = the last page); x, y,
+     * w, h in h100. Request errors (page > count, geometry, rect outside the page) are [AppearanceException]; anything
+     * else is a PDF error.
+     */
+    fun suggest(doc: ByteArray, verifyUri: String, page0: Int, x: Long, y: Long, w: Long, h: Long, exact: Boolean): Suggested {
+        val inc = Incremental(doc)
+        val rd = inc.reader
+        val pages = pageList(rd, inc.root["Pages"])
         val n = pages.size
-        for (i in n - 1 downTo 0) {
-            if (!isVerifyPage(rd, pages[i], verifyUri)) return (i + 1) to n
+        val page = if (page0 == 0) lastContentPage(rd, pages, verifyUri) else page0
+        if (page < 1 || page > n) throw AppearanceException("page $page > page count $n")
+        val sizes = pages.map { d ->
+            try {
+                val g = geometry(rd, d)
+                val bw = g.box[2] - g.box[0]
+                val bh = g.box[3] - g.box[1]
+                if (g.rot == 90 || g.rot == 270) bh to bw else bw to bh
+            } catch (_: Exception) {
+                null
+            }
         }
-        return n to n
+        val loc = StampPlacement.locate(rd, inc.root["Pages"], rd.trailer["Root"].ref, page, x, y, w, h, exact)
+        return Suggested(page, loc.result, sizes)
     }
 
     /** Go `isVerifyPage`: /Annots (first 10 000) holds a /Link whose /A is `/S /URI` with /URI byte-equal to verifyUri. Unreadable → false. */

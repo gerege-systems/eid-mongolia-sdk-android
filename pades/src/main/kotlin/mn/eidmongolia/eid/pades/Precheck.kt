@@ -33,14 +33,7 @@ internal object Precheck {
     private class SigDict(val obj: Int, val byteRange: List<Long>?, val subFilter: String?, val type: String? = null)
 
     fun run(doc: ByteArray, issuers: List<Cert>): Result {
-        if (encrypted(doc)) throw EidPadesException.PdfEncrypted("encrypted PDF is not supported")
-        val (sigs, flags) = try {
-            scan(doc)
-        } catch (e: EidPadesException) {
-            throw e
-        } catch (e: Exception) {
-            throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}")
-        }
+        val (sigs, flags) = open(doc)
         if (sigs.isEmpty()) return Result(true, 1, emptyList())
         if (sigs.size >= MAX_SIGNATURES) throw EidPadesException.PdfTooManySignatures("too many signatures")
         val (locked, hasDss) = flags
@@ -95,6 +88,21 @@ internal object Precheck {
     }
 
     /** Step 4: /Encrypt in the trailer; when the parser cannot open the file, `/Encrypt n g R` or `/Encrypt <<` in the bytes. */
+    /** PRECHECKS #4–#6 (Go `encrypted` + `scanSignatures`): encryption, then the signature dicts. */
+    private fun open(doc: ByteArray): Pair<List<SigDict>, Pair<Boolean, Boolean>> {
+        if (encrypted(doc)) throw EidPadesException.PdfEncrypted("encrypted PDF is not supported")
+        return try {
+            scan(doc)
+        } catch (e: EidPadesException) {
+            throw e
+        } catch (e: Exception) {
+            throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}")
+        }
+    }
+
+    /** [Pades.suggestPlacement]: PRECHECKS #4–#6 as in [run]; true when the document has signature dicts. */
+    fun hasSignatures(doc: ByteArray): Boolean = open(doc).first.isNotEmpty()
+
     private fun encrypted(doc: ByteArray): Boolean = try {
         val r = PdfReader.open(doc)
         !r.trailer["Encrypt"].isNull

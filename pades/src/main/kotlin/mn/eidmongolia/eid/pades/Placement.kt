@@ -54,17 +54,48 @@ internal object StampPlacement {
         if (rot == 90 || rot == 270) vw = vh.also { vh = vw }
         for ((cx, cy) in candidates(vw, vh, x, y, w, h)) {
             val r = try { Appearance.rect(box, rot, cx, cy, w, h) } catch (_: AppearanceException) { continue }
-            val e = longArrayOf(r[0] - PAD, r[1] - PAD, r[2] + PAD, r[3] + PAD)
-            if (occ.none { b -> b[0] < e[2] && e[0] < b[2] && b[1] < e[3] && e[1] < b[3] }) return cx to cy
+            if (free(r, occ)) return cx to cy
         }
         return null
     }
 
-    /** Scan + choice for a visible stamp at (x, y, w, h) on [page] (reached as object [pageId]). */
-    fun choose(rd: PdfReader, page: PdfDict, pageId: Int, box: LongArray, rot: Int, x: Long, y: Long, w: Long, h: Long): Result {
+    /** [r] (user space, h100) grown by [PAD] on every side overlaps no occupied box (strict overlap: touching edges are free) — Go `placeFree`. */
+    fun free(r: LongArray, occ: List<LongArray>): Boolean {
+        val e = longArrayOf(r[0] - PAD, r[1] - PAD, r[2] + PAD, r[3] + PAD)
+        return occ.none { b -> b[0] < e[2] && e[0] < b[2] && b[1] < e[3] && e[1] < b[3] }
+    }
+
+    /**
+     * Scan + choice for a visible stamp at (x, y, w, h) on [page] (reached as object [pageId]) — Go `PlaceOnPage`.
+     * [exact] (§6a): the requested rect is the only candidate (never moved) — REQUESTED when free, OVERLAP when not.
+     */
+    fun choose(rd: PdfReader, page: PdfDict, pageId: Int, box: LongArray, rot: Int, x: Long, y: Long, w: Long, h: Long, exact: Boolean = false): Result {
         val occ = try { Occupancy.scan(rd, page, pageId, box) } catch (_: Exception) { return Result(x, y, Status.UNSCANNED) }
+        if (exact) {
+            val r = try { Appearance.rect(box, rot, x, y, w, h) } catch (_: AppearanceException) { return Result(x, y, Status.OVERLAP) }
+            return Result(x, y, if (free(r, occ)) Status.REQUESTED else Status.OVERLAP)
+        }
         val (px, py) = place(box, rot, x, y, w, h, occ) ?: return Result(x, y, Status.OVERLAP)
         return if (px == x && py == y) Result(x, y, Status.REQUESTED) else Result(px, py, Status.MOVED)
+    }
+
+    /** [locate]'s result: the page (dict + reference), its /Rotate, the final /Rect (user space, h100) and the choice. */
+    class Located(val page: Pair<PdfDict, PdfRef>, val rot: Int, val rect: LongArray, val result: Result)
+
+    /**
+     * Where the stamp goes on page [page] (1-based, resolved) of the /Pages tree [pages] — the one path shared by
+     * [SignatureRevision.prepare] and [Pades.suggestPlacement] (PLACEMENT_SPEC §6b): page → geometry → the requested
+     * rect must lie inside the page ([AppearanceException]) → scan + choice.
+     */
+    fun locate(rd: PdfReader, pages: PdfObj, owner: PdfRef?, page: Int, x: Long, y: Long, w: Long, h: Long, exact: Boolean): Located {
+        val p = Appearance.nthPage(rd, pages, owner, page) ?: throw AppearanceException("page $page missing")
+        val g = Appearance.geometry(rd, p.first)
+        var rect = Appearance.rect(g.box, g.rot, x, y, w, h)
+        // PLACEMENT_SPEC.md: move off existing page content (exact: only report it); the requested rect stays when
+        // nothing is free.
+        val placed = choose(rd, p.first, p.second.id, g.box, g.rot, x, y, w, h, exact)
+        if (placed.status == Status.MOVED) rect = Appearance.rect(g.box, g.rot, placed.x, placed.y, w, h)
+        return Located(p, g.rot, rect, placed)
     }
 }
 

@@ -77,17 +77,13 @@ internal object SignatureRevision {
             inc.writeObject(fieldId, fld.toString().toByteArray(Charsets.ISO_8859_1))
         } else {
             if (sigText(signerName, 120) == null || GoText.trimSpace(signerName) != vis.name) throw AppearanceException("name cannot be written to /Name")
-            page = Appearance.nthPage(rd, root["Pages"], rd.trailer["Root"].ref, vis.page) ?: throw AppearanceException("page ${vis.page} missing")
-            val g = Appearance.geometry(rd, page.first)
-            var rect = Appearance.rect(g.box, g.rot, vis.x, vis.y, vis.w, vis.h)
-            // PLACEMENT_SPEC.md: move off existing page content; the requested rect stays when nothing is free.
-            val placed = StampPlacement.choose(rd, page.first, page.second.id, g.box, g.rot, vis.x, vis.y, vis.w, vis.h)
-            if (placed.status == StampPlacement.Status.MOVED) rect = Appearance.rect(g.box, g.rot, placed.x, placed.y, vis.w, vis.h)
-            placement = placed
+            val loc = StampPlacement.locate(rd, root["Pages"], rd.trailer["Root"].ref, vis.page, vis.x, vis.y, vis.w, vis.h, vis.exact)
+            page = loc.page
+            placement = loc.result
             val bodies = Appearance.objects(
-                Appearance.Params(vis.w.toInt(), vis.h.toInt(), g.rot, vis.name, vis.role, vis.lang, vis.date, vis.url), apIds,
+                Appearance.Params(vis.w.toInt(), vis.h.toInt(), loc.rot, vis.name, vis.role, vis.lang, vis.date, vis.url), apIds,
             )
-            inc.writeObject(fieldId, Appearance.widget(fieldName, rect, page.second, sigId, apIds[0]))
+            inc.writeObject(fieldId, Appearance.widget(fieldName, loc.rect, page.second, sigId, apIds[0]))
             bodies.forEachIndexed { i, b -> inc.writeObject(apIds[i], b) }
         }
         page?.let { addWidgetToPage(inc, it.first, it.second, fieldId) }

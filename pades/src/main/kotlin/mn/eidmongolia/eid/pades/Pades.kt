@@ -197,6 +197,34 @@ internal object Pades {
             lang = a.lang?.takeIf { it.isNotEmpty() } ?: o.lang?.takeIf { it.isNotEmpty() } ?: "mn",
             date = df.format(now) + " (+08)",
             url = Precheck.VERIFY_URL + docId + "/" + revIndex,
+            exact = a.exact,
+        )
+    }
+
+    /**
+     * Go `pades.SuggestPlacement` (PLACEMENT_SPEC.md §6b): [prepare]'s placement without signing. Checks, in order: size,
+     * `%PDF-` + structure, appearance values, encryption, signature scan, then page / geometry / rect (REQUEST_INVALID).
+     */
+    fun suggestPlacement(doc: ByteArray, a: SignatureAppearance): PlacementSuggestion {
+        if (doc.size > MAX_INPUT_BYTES) throw EidPadesException.PdfTooLarge("PDF larger than 9.75 MiB")
+        if (doc.size < 5 || String(doc, 0, 5, Charsets.ISO_8859_1) != "%PDF-") throw EidPadesException.PdfInvalid("not a PDF or damaged")
+        try { Structure.check(doc) } catch (e: Structure.Failure) { throw EidPadesException.PdfInvalid("PDF structure nested too deep or too complex") }
+        checkAppearance(PrepareOptions(signerCert = ByteArray(0), appearance = a))
+        val verifyUri = if (Precheck.hasSignatures(doc)) Precheck.docIdFromPage(doc)?.let { Precheck.VERIFY_URL + it } ?: "" else ""
+        val w = Appearance.round100(a.width)
+        val h = Appearance.round100(a.height)
+        val s = try {
+            Appearance.suggest(doc, verifyUri, a.page, Appearance.round100(a.x), Appearance.round100(a.y), w, h, a.exact)
+        } catch (e: AppearanceException) {
+            throw EidPadesException.RequestInvalid("appearance: ${e.message}")
+        } catch (e: Exception) {
+            throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}")
+        }
+        val pages = s.sizes.map { PageSize((it?.first ?: 0L) / 100.0, (it?.second ?: 0L) / 100.0) }
+        return PlacementSuggestion(
+            page = s.page, x = s.result.x / 100.0, y = s.result.y / 100.0, width = w / 100.0, height = h / 100.0,
+            status = PlacementStatus.valueOf(s.result.status.name), pageWidth = pages[s.page - 1].width,
+            pageHeight = pages[s.page - 1].height, pageCount = pages.size, pages = pages,
         )
     }
 

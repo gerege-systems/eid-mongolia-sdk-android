@@ -24,7 +24,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.6.0")
+    implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.7.0")
 }
 ```
 
@@ -67,6 +67,14 @@ val body = done.registration(Medium.PHONE, sessionId = sessionId).toJson()
   `prepared.placement` (`page`, `x`, `y`, `width`, `height` — pt; `status`: `PlacementStatus.REQUESTED` | `MOVED` |
   `OVERLAP` — чөлөөт газар алга, хүссэн байрлалд | `UNSCANNED` — хуудсыг хязгаарт уншиж чадсангүй, хүссэн байрлалд).
   `OVERLAP` / `UNSCANNED`-ийг хэрэглэгчид мэдэгдэх нь зүйтэй — гарын үсэг аль ч тохиолдолд хүчинтэй.
+- **Иргэн өөрөө байрлуулах** (`PLACEMENT_SPEC.md` §6a/§6b): `EidPades.suggestPlacement(pdf, appearance)` — гарын үсэг,
+  сертификат, сүлжээгүйгээр `prepare`-ийн байрлалын алгоритмыг ажиллуулна → `PlacementSuggestion` (`page`, `x`, `y`,
+  `width`, `height`, `status` = ижил оролтод `prepared.placement`; `pageWidth`, `pageHeight`, `pageCount`, `pages[]`
+  (хуудас бүрийн харагдах хэмжээ, pt; уншигдахгүй бол 0×0)). UI урьдчилан харахад анхдагч байрлалыг үзүүлж, иргэн
+  чирсэн байрлалыг `SignatureAppearance(…, exact = true)`-аар өгнө: тамга яг тэнд зурагдана, хэзээ ч шилжихгүй
+  (`status`: `REQUESTED` эсвэл агуулга дээр бол `OVERLAP`, `UNSCANNED`; `MOVED` хэзээ ч үгүй); хуудаснаас гарвал
+  `REQUEST_INVALID`. Дэлгэцийн (зүүн дээд, `s` px/pt) ↔ appearance: `left = x·s`, `top = (pageHeight − y − height)·s`;
+  буцаад `x = left/s`, `y = pageHeight − top/s − height`. `exact = false` (анхдагч) өмнөхтэй байт-ижил.
 - `registration(medium, sessionId, onBehalfOf)` — өмнөх гарын үсгүүдийг зөвхөн `priorCmsSha256`-аар (хоёр жагсаалтыг
   зэрэг илгээвэл CA 400). 409 `PRIOR_MISMATCH` бол `priorSignatures`-ийн тохирохыг `priorRevisionSha256` руу шилжүүлж
   дахин илгээнэ (CA угсарсан, горим A). revIndex 1 хуудасгүй, `fileName`-гүй, `medium` ↔ `sessionId` зөрчилтэй (phone-д sessionId заавал, token-д
@@ -111,5 +119,5 @@ returns a 32-byte DTBS to be signed by the citizen's phone or USB token; `comple
 RFC 3161 timestamp, OCSP/CRL and DSS (PAdES B-LT). Output is byte-identical to the Go reference
 (`gerege-systems/eid-mongolia-sdk-go`, profile `pades-client/1`), enforced by golden vectors in CI. Install from
 JitPack: add `maven("https://jitpack.io")` and
-`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.6.0")` (use the latest tag). This repository is a read-only mirror;
+`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.7.0")` (use the latest tag). This repository is a read-only mirror;
 please file issues here.

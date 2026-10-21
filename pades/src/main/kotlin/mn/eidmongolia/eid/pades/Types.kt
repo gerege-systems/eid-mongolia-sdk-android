@@ -39,6 +39,10 @@ class PrepareOptions(
  * @param page input document page, 1-based (an explicit number is kept as is); 0 → the input's last page that is not an
  *   eID verify page — neither this prepare's verify page nor earlier revisions' ones count (PLACEMENT_SPEC §1a)
  * @param lang "mn" | "en"; null → [PrepareOptions.lang] (else mn)
+ * @param exact draw the stamp exactly at page/x/y/width/height (a position the signer chose, e.g. dragged on a page
+ *   preview): never moved off page content. [Placement.status] is then REQUESTED, or OVERLAP when content is under the
+ *   rect (UNSCANNED when the page cannot be scanned) — never MOVED. false (default) = x/y is only the preferred spot
+ *   (PLACEMENT_SPEC.md §6, §6a). The rect must lie inside the page (else REQUEST_INVALID).
  */
 class SignatureAppearance(
     val page: Int = 0,
@@ -47,6 +51,7 @@ class SignatureAppearance(
     val width: Double,
     val height: Double,
     val lang: String? = null,
+    val exact: Boolean = false,
 )
 
 /**
@@ -91,6 +96,34 @@ enum class PlacementStatus(val wire: String) {
     /** The page could not be scanned within the limits: drawn at the requested spot. */
     UNSCANNED("unscanned"),
 }
+
+/**
+ * [EidPades.suggestPlacement] result — Go `pades.Suggestion` (iOS `EidPades.PlacementSuggestion` 1:1, PLACEMENT_SPEC.md
+ * §6b), pt. [page], [x], [y], [width], [height], [status] are what [EidPades.prepare] returns in [Prepared.placement]
+ * for the same PDF and appearance. Coordinates: origin at the visible lower-left corner, x right, y up — a UI that
+ * renders the page at `s` px/pt with a top-left origin maps `left = x·s`, `top = (pageHeight − y − height)·s`; back:
+ * `x = left/s`, `y = pageHeight − top/s − height`, then prepare with `exact = true`.
+ *
+ * @property page 1-based, resolved (appearance page 0 → PLACEMENT_SPEC §1a)
+ * @property pageWidth visible size of [page] (CropBox, else MediaBox, after /Rotate)
+ * @property pageCount pages in /Pages tree order
+ * @property pages visible size of every page; index 0 = page 1; (0, 0) = geometry unreadable
+ */
+data class PlacementSuggestion(
+    val page: Int,
+    val x: Double,
+    val y: Double,
+    val width: Double,
+    val height: Double,
+    val status: PlacementStatus,
+    val pageWidth: Double,
+    val pageHeight: Double,
+    val pageCount: Int,
+    val pages: List<PageSize>,
+)
+
+/** A page's visible size in pt ([PlacementSuggestion.pages]). */
+data class PageSize(val width: Double, val height: Double)
 
 /**
  * [EidPades.complete] input.

@@ -65,9 +65,34 @@ class GoldenTest {
                     SignatureAppearance(
                         page = it.optInt("page", 0), x = it.getDouble("x"), y = it.getDouble("y"),
                         width = it.getDouble("width"), height = it.getDouble("height"), lang = it.optString("lang").ifEmpty { null },
+                        exact = it.optBoolean("exact", false),
                     )
                 },
             )
+            // suggestPlacement (PLACEMENT_SPEC §6b, golden v7) field-for-field, before prepare (Go golden_test order).
+            var suggestion: PlacementSuggestion? = null
+            opts.appearance?.let { a ->
+                val wantErr = e.optString("suggestionError").ifEmpty { null }
+                try {
+                    val s = EidPades.suggestPlacement(input, a)
+                    suggestion = s
+                    if (wantErr != null) fail("$name: suggestPlacement succeeded, Go failed with $wantErr")
+                    val ws = e.optJSONObject("suggestion") ?: error("$name: visible case without expect.suggestion")
+                    val wp = ws.getJSONArray("pages")
+                    assertEquals("$name suggestion", listOf(
+                        ws.getInt("page").toDouble(), ws.getDouble("x"), ws.getDouble("y"), ws.getDouble("width"), ws.getDouble("height"),
+                        ws.getDouble("pageWidth"), ws.getDouble("pageHeight"), ws.getInt("pageCount").toDouble(),
+                    ), listOf(s.page.toDouble(), s.x, s.y, s.width, s.height, s.pageWidth, s.pageHeight, s.pageCount.toDouble()))
+                    assertEquals("$name suggestion status", ws.getString("status"), s.status.wire)
+                    assertEquals(
+                        "$name suggestion pages",
+                        (0 until wp.length()).map { wp.getJSONObject(it).let { o -> PageSize(o.getDouble("width"), o.getDouble("height")) } },
+                        s.pages,
+                    )
+                } catch (x: EidPadesException) {
+                    assertEquals("$name suggestPlacement (${x.message})", wantErr, x.code)
+                }
+            }
             val want = e.optString("error").ifEmpty { null }
             val prep = try {
                 Pades.prepare(input, opts)
@@ -95,6 +120,13 @@ class GoldenTest {
                 prep.placement?.let { listOf(it.page.toDouble(), it.x, it.y, it.width, it.height) },
             )
             assertEquals("$name placement status", wantPl?.getString("status"), prep.placement?.status?.wire)
+            // suggestion ⊇ placement, except page0-two-verify (unsigned input: suggestPlacement has no docId, §6b).
+            if (opts.appearance != null) {
+                val s = suggestion ?: error("$name: prepare ok, suggestPlacement failed")
+                if (name != "page0-two-verify") {
+                    assertEquals("$name suggestion ≠ placement", Placement(s.page, s.x, s.y, s.width, s.height, s.status), prep.placement)
+                }
+            }
 
             val res = Pades.complete(
                 prep.state, Hex.decode(e.getString("signature")),
@@ -126,6 +158,10 @@ class GoldenTest {
         val okCases = (0 until cases.length()).count { cases.getJSONObject(it).getJSONObject("expect").optString("error").isEmpty() }
         assertTrue("no complete case ran", okCases > 0)
         assertEquals("completed cases", okCases, completed)
+        val exactCases = (0 until cases.length()).count {
+            cases.getJSONObject(it).getJSONObject("prepare").optJSONObject("appearance")?.optBoolean("exact", false) == true
+        }
+        assertTrue("golden v7 exact cases", exactCases >= 5)
 
         // Visible signature on a signed document without a verify page (no docId) → REQUEST_INVALID (verify URL needs it).
         val noPage = outputs["quartz-pdf13-nopage"] ?: error("quartz-pdf13-nopage output")

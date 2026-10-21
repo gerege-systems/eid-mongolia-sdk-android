@@ -21,6 +21,20 @@ object EidPades {
     fun prepare(pdf: ByteArray, options: PrepareOptions): Prepared = guard { Pades.prepare(pdf, options) }
 
     /**
+     * Runs [prepare]'s placement (page 0 resolution, page scan, candidate search; [SignatureAppearance.exact]) on [pdf]
+     * without signing — no certificate, no network — so a UI can show the default stamp position, the page sizes, and
+     * whether a chosen rect lies over content (Go `pades.SuggestPlacement`, PLACEMENT_SPEC.md §6b). CPU work — not on
+     * the UI thread.
+     *
+     * Errors, in order: PDF_TOO_LARGE, PDF_INVALID (header/structure), REQUEST_INVALID (appearance values), PDF_ENCRYPTED,
+     * REQUEST_INVALID (page > page count, page geometry, rect outside the page). Not checked here ([prepare] does): prior
+     * signatures, the signer certificate, whether the signer's name fits the stamp. Page 0 skips this document's eID
+     * verify pages using the docId read from its verify page — for an unsigned document no page is skipped.
+     */
+    fun suggestPlacement(pdf: ByteArray, appearance: SignatureAppearance): PlacementSuggestion =
+        guard { Pades.suggestPlacement(pdf, appearance) }
+
+    /**
      * @param state [Prepared.state]
      * @param signature RSA PKCS#1 v1.5, ECDSA r‖s or DER — selected by the certificate's key
      * Network work, runs on [Dispatchers.IO].
