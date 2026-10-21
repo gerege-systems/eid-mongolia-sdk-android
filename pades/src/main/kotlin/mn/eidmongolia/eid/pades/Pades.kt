@@ -36,6 +36,11 @@ internal object Pades {
             throw EidPadesException.RequestInvalid("docId must be a lowercase UUID")
         }
         if (o.lang != null && o.lang.isNotEmpty() && o.lang != "mn" && o.lang != "en") throw EidPadesException.RequestInvalid("lang: mn | en")
+        val pos = o.verifyPagePosition
+        if (pos != null && pos.isNotEmpty() && pos != "last" && pos != "first") {
+            throw EidPadesException.RequestInvalid("verifyPagePosition: last | first")
+        }
+        val first = pos == "first"
         checkAppearance(o)
         val now = o.signingTime ?: Date()
         val inHex = Hex.encode(Cms.sha256(doc))
@@ -63,6 +68,7 @@ internal object Pades {
                         verifyUrl = Precheck.VERIFY_URL + id, trustUrl = PAGE_TRUST_URL, caName = cert.issuerCommonName,
                         tsaName = PAGE_TSA_NAME, provider = PAGE_PROVIDER, lang = o.lang,
                     ),
+                    first,
                 )
             } catch (e: Exception) {
                 throw EidPadesException.PdfInvalid("cannot append the verify page: ${e.message}")
@@ -71,8 +77,14 @@ internal object Pades {
         }
         val name = o.signerName?.takeIf { GoText.trimSpace(it).isNotEmpty() } ?: cert.displayName
         val vis = if (o.appearance != null) visibleSpec(doc, o, name, now, docId ?: "", pre.revIndex) else null
+        // vis.page counts the input's pages; a verify page added in front shifts them by one in base (PLACEMENT_SPEC §1b).
+        val onBase = if (vis != null && hasPage && first) {
+            Appearance.Visible(vis.page + 1, vis.x, vis.y, vis.w, vis.h, vis.name, vis.role, vis.lang, vis.date, vis.url, vis.exact)
+        } else {
+            vis
+        }
         val prep = try {
-            SignatureRevision.prepare(base, now, name, o.reason, vis)
+            SignatureRevision.prepare(base, now, name, o.reason, onBase)
         } catch (e: AppearanceException) {
             throw EidPadesException.RequestInvalid("appearance: ${e.message}")
         } catch (e: Exception) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 — 2026-10-21
+
+### Added — `PrepareOptions.verifyPagePosition` ("last" | "first")
+
+- `"first"` — баталгаажуулалтын (QR) хуудас баримтын 1-р хуудас болно; анхдагч `"last"` өмнөхтэй байт-ижил; бусад утга
+  `REQUEST_INVALID`. `SignatureAppearance.page`, `suggestPlacement`, `Placement.page` оролтын PDF-ийн хуудсаар тоологдоно
+  (`PAGE_SPEC.md` §8a, `PLACEMENT_SPEC.md` §1b). Шинэ параметр нь `PrepareOptions`-ийн төгсгөлд (нэрлэсэн аргументтай
+  дуудлага өөрчлөгдөхгүй). Golden = Go reference `pades-golden-v9` (+8 `vpfirst-*` кейс).
+
 ## 0.7.1 — 2026-10-21
 
 ### Tests — golden v8 (object generations)

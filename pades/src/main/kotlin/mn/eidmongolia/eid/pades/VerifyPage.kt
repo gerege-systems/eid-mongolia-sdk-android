@@ -258,7 +258,8 @@ internal object VerifyPage {
     }
 
     /** Appends the page as its own incremental revision (PAGE_SPEC §8); the Catalog is unchanged. */
-    fun append(base: ByteArray, p: Data): ByteArray {
+    /** Adds the page as an incremental update: at the end of the root /Pages /Kids, at the front when [first] (PAGE_SPEC §8a). */
+    fun append(base: ByteArray, p: Data, first: Boolean = false): ByteArray {
         val reg = PageFont.regular
         val bld = PageFont.bold
         val w = Writer(reg, bld)
@@ -305,8 +306,14 @@ internal object VerifyPage {
             pn.append(" /").append(Incremental.escapeName(key)).append(' ').append(inc.serialize(pages[key]))
         }
         pn.append(" /Kids [")
-        for (k in kids.items) pn.append(inc.serialize(k)).append(' ')
-        pn.append("$pageId 0 R] /Count ${count + 1} >>")
+        if (first) {
+            pn.append("$pageId 0 R")
+            for (k in kids.items) pn.append(' ').append(inc.serialize(k))
+            pn.append("] /Count ${count + 1} >>")
+        } else {
+            for (k in kids.items) pn.append(inc.serialize(k)).append(' ')
+            pn.append("$pageId 0 R] /Count ${count + 1} >>")
+        }
         inc.writeObject(pp.id, pn.toString().toByteArray(Charsets.ISO_8859_1), pp.gen)
         return inc.finish(rootRef.id)
     }

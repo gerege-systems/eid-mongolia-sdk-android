@@ -16,6 +16,10 @@ import java.util.Date
  * @param fileName name shown on the page (required with [verifyPage]; NFC, ≤ 120 characters)
  * @param lang page language "mn" | "en"; null/empty → "mn"
  * @param appearance visible signature (APPEARANCE_SPEC.md); null → invisible (default, byte-identical to before)
+ * @param verifyPagePosition where the verification page goes when it is added ([verifyPage] on an unsigned document):
+ *   "last" (default; also null/empty) or "first" (it becomes page 1). [SignatureAppearance.page], `suggestPlacement` and
+ *   [Placement.page] always count the pages of the input PDF as given — never the added page (PAGE_SPEC §8a,
+ *   PLACEMENT_SPEC §1b). Other values → REQUEST_INVALID.
  */
 class PrepareOptions(
     val signerCert: ByteArray,
@@ -29,6 +33,7 @@ class PrepareOptions(
     val fileName: String? = null,
     val lang: String? = null,
     val appearance: SignatureAppearance? = null,
+    val verifyPagePosition: String? = null,
 )
 
 /**

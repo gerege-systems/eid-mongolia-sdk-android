@@ -61,6 +61,7 @@ class GoldenTest {
                 claimedRole = p.optString("claimedRole").ifEmpty { null }, docId = p.optString("docId").ifEmpty { null },
                 verifyPage = p.optBoolean("verifyPage", false), fileName = p.optString("fileName").ifEmpty { null },
                 lang = p.optString("lang").ifEmpty { null },
+                verifyPagePosition = p.optString("verifyPagePosition").ifEmpty { null },
                 appearance = p.optJSONObject("appearance")?.let {
                     SignatureAppearance(
                         page = it.optInt("page", 0), x = it.getDouble("x"), y = it.getDouble("y"),
