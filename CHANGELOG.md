@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 — 2026-10-21
+
+### Tests — golden v8 (object generations)
+
+- Golden = Go reference `pades-golden-v8` (+3 `*-gen1` кейс: verify хуудас, Link, URI action generation ≠ 0).
+  Kotlin аль хэдийн xref-ийн generation-оор уншдаг — кодын өөрчлөлтгүй; Swift-тэй хувилбарын дугаар ижил.
+
 ## 0.7.0 — 2026-10-21
 
 ### Go reference v0.14.0 (golden v7): `appearance.exact` + `suggestPlacement`
