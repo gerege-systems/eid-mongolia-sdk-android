@@ -22,6 +22,8 @@ internal class PrepState(
     val pdf: ByteArray,
     /** Cleaned document name for the CA registration (Go `prepState.FileName`). */
     val fileName: String? = null,
+    /** PNG sha256 of the images drawn in the stamp (Go `prepState.Images` → Completed.images → registration). */
+    val images: List<SignatureImage> = emptyList(),
 ) {
     fun encode(): ByteArray {
         val h = JSONObject()
@@ -36,6 +38,9 @@ internal class PrepState(
         pageSha256?.takeIf { it.isNotEmpty() }?.let { h.put("pageSha256", it) }
         claimedRole?.takeIf { it.isNotEmpty() }?.let { h.put("claimedRole", it) }
         fileName?.takeIf { it.isNotEmpty() }?.let { h.put("fileName", it) }
+        if (images.isNotEmpty()) {
+            h.put("images", JSONArray(images.map { JSONObject().put("kind", it.kind.wire).put("sha256", it.sha256) }))
+        }
         h.put("preparedSha256", Hex.encode(Cms.sha256(pdf)))
         h.put("priorCmsSha256", JSONArray(priorCmsSha256))
         val head = h.toString().toByteArray(Charsets.UTF_8)
@@ -65,6 +70,7 @@ internal class PrepState(
             val br = h.getJSONArray("byteRange")
             val chain = h.optJSONArray("chain") ?: JSONArray()
             val prior = h.optJSONArray("priorCmsSha256") ?: JSONArray()
+            val imgs = h.optJSONArray("images") ?: JSONArray()
             val s = PrepState(
                 docId = h.getString("docId"),
                 signerCert = Base64Std.decode(h.getString("signerCert")),
@@ -79,6 +85,11 @@ internal class PrepState(
                 priorCmsSha256 = (0 until prior.length()).map { prior.getString(it) },
                 pdf = pdf,
                 fileName = h.optString("fileName").ifEmpty { null },
+                images = (0 until imgs.length()).map { i ->
+                    val o = imgs.getJSONObject(i)
+                    val kind = o.getString("kind")
+                    SignatureImage(SignatureImageKind.values().first { it.wire == kind }, o.getString("sha256"))
+                },
             )
             require(s.signedAttrs.isNotEmpty() && s.signerCert.isNotEmpty() && s.pdf.isNotEmpty() && s.revIndex >= 1) { "state incomplete" }
             return s

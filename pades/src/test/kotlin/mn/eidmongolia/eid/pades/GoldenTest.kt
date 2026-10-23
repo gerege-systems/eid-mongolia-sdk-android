@@ -67,6 +67,8 @@ class GoldenTest {
                         page = it.optInt("page", 0), x = it.getDouble("x"), y = it.getDouble("y"),
                         width = it.getDouble("width"), height = it.getDouble("height"), lang = it.optString("lang").ifEmpty { null },
                         exact = it.optBoolean("exact", false),
+                        signatureImage = it.optJSONObject("signatureImage")?.let(::image),
+                        stampImage = it.optJSONObject("stampImage")?.let(::image),
                     )
                 },
             )
@@ -152,6 +154,12 @@ class GoldenTest {
             assertEquals("$name priorRevisionSha256", wantPriorRev, res.priorRevisionSha256)
             assertEquals("$name outSha256", e.getString("outSha256"), res.outSha256)
             assertEquals("$name claimedRole", p.optString("claimedRole").ifEmpty { null }, res.claimedRole)
+            // APPEARANCE_SPEC §6.6 (golden v10): the images' PNG sha256 → Completed.images (signature, then stamp).
+            val pa = p.optJSONObject("appearance")
+            assertEquals("$name images", listOfNotNull(
+                pa?.optJSONObject("signatureImage")?.let { SignatureImage(SignatureImageKind.SIGNATURE, it.getString("sha256")) },
+                pa?.optJSONObject("stampImage")?.let { SignatureImage(SignatureImageKind.STAMP, it.getString("sha256")) },
+            ), res.images)
             checkRegistration(name, res, p.optString("fileName").ifEmpty { null })
             outputs[name] = res.pdf
             completed++
@@ -222,9 +230,16 @@ class GoldenTest {
         val want = mutableSetOf("docID", "revIndex", "medium", "sessionID", "cms", "fileName", "inSha256", "sigRevSha256", "outSha256", "signerEtsi")
         want += if (done.revIndex == 1) "pageSha256" else "priorCmsSha256"
         if (obo != null) want += "onBehalfOf"
+        if (done.images.isNotEmpty()) want += "images"
         assertEquals(name, want, json.keySet())
         assertEquals(name, "phone", json.getString("medium"))
         assertEquals(name, done.fileName, json.getString("fileName"))
+    }
+
+    /** manifest `prepare.appearance.signatureImage|stampImage` → [PdfImage] (alpha = base64 zlib, used verbatim). */
+    private fun image(o: JSONObject): PdfImage {
+        val c = o.getJSONArray("color")
+        return PdfImage(o.getInt("width"), o.getInt("height"), IntArray(3) { c.getInt(it) }, Base64Std.decode(o.getString("alpha")), o.getString("sha256"))
     }
 
     @Test

@@ -42,6 +42,9 @@ internal object Pades {
         }
         val first = pos == "first"
         checkAppearance(o)
+        if (o.appearance?.stampImage != null && o.claimedRole.isNullOrEmpty()) {
+            throw EidPadesException.RequestInvalid("appearance: stampImage only with claimedRole (onBehalfOf)")
+        }
         val now = o.signingTime ?: Date()
         val inHex = Hex.encode(Cms.sha256(doc))
         val fileName = cleanFileName(o.fileName)
@@ -79,7 +82,7 @@ internal object Pades {
         val vis = if (o.appearance != null) visibleSpec(doc, o, name, now, docId ?: "", pre.revIndex) else null
         // vis.page counts the input's pages; a verify page added in front shifts them by one in base (PLACEMENT_SPEC §1b).
         val onBase = if (vis != null && hasPage && first) {
-            Appearance.Visible(vis.page + 1, vis.x, vis.y, vis.w, vis.h, vis.name, vis.role, vis.lang, vis.date, vis.url, vis.exact)
+            Appearance.Visible(vis.page + 1, vis.x, vis.y, vis.w, vis.h, vis.name, vis.role, vis.lang, vis.date, vis.url, vis.exact, vis.sig, vis.stamp)
         } else {
             vis
         }
@@ -100,6 +103,10 @@ internal object Pades {
             docId = docId ?: "", signerCert = cert.raw, chain = chain.map { it.raw }, signedAttrs = attrs, byteRange = prep.byteRange,
             revIndex = pre.revIndex, inSha256 = inHex, hasPage = hasPage, pageSha256 = pageHex, claimedRole = o.claimedRole,
             priorCmsSha256 = pre.priorCmsSha256, pdf = prep.pdf, fileName = fileName,
+            images = listOfNotNull(
+                o.appearance?.signatureImage?.let { SignatureImage(SignatureImageKind.SIGNATURE, it.sha256) },
+                o.appearance?.stampImage?.let { SignatureImage(SignatureImageKind.STAMP, it.sha256) },
+            ),
         )
         val placement = if (vis != null && prep.placement != null) {
             val pl = prep.placement
@@ -173,7 +180,7 @@ internal object Pades {
             hasPage = st.hasPage, pageSha256 = st.pageSha256, signerCert = cert.raw, revIndex = st.revIndex,
             sigRevSha256 = Hex.encode(Cms.sha256(signed)), priorCmsSha256 = prior.map { it.first },
             priorRevisionSha256 = prior.map { it.second }, fileName = st.fileName,
-            claimedRole = st.claimedRole?.takeIf { it.isNotEmpty() },
+            claimedRole = st.claimedRole?.takeIf { it.isNotEmpty() }, images = st.images,
         )
     }
 
@@ -193,7 +200,14 @@ internal object Pades {
             if (t == Character.CONTROL.toInt() || t == Character.FORMAT.toInt() || t == Character.SURROGATE.toInt()) throw bad("control character in claimedRole")
             i += Character.charCount(r)
         }
+        for ((name, im) in listOf("signatureImage" to a.signatureImage, "stampImage" to a.stampImage)) {
+            if (im == null) continue
+            if (!SHA256_RE.matches(im.sha256)) throw bad("$name.sha256: lowercase hex SHA-256")
+            try { Appearance.checkImage(im) } catch (e: AppearanceException) { throw bad("$name: ${e.message?.removePrefix("image: ")}") }
+        }
     }
+
+    private val SHA256_RE = Regex("^[0-9a-f]{64}$")
 
     /** Go visibleSpec: page (0 → the last page that is not an eID verify page, PLACEMENT_SPEC §1a), h100, language, date (+08), verify URL. */
     private fun visibleSpec(doc: ByteArray, o: PrepareOptions, name: String, now: Date, docId: String, revIndex: Int): Appearance.Visible {
@@ -202,14 +216,17 @@ internal object Pades {
         val (last, n) = try { Appearance.defaultStampPage(doc, Precheck.VERIFY_URL + docId) } catch (e: Exception) { throw EidPadesException.PdfInvalid("not a PDF or damaged: ${e.message}") }
         val page = if (a.page == 0) last else a.page
         if (page > n) throw EidPadesException.RequestInvalid("appearance: page $page > page count $n")
+        val (aw, ah) = a.size()
         val df = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.ROOT).apply { timeZone = java.util.TimeZone.getTimeZone("GMT+08:00") }
         return Appearance.Visible(
-            page = page, x = Appearance.round100(a.x), y = Appearance.round100(a.y), w = Appearance.round100(a.width), h = Appearance.round100(a.height),
+            page = page, x = Appearance.round100(a.x), y = Appearance.round100(a.y), w = Appearance.round100(aw), h = Appearance.round100(ah),
             name = GoText.trimSpace(name), role = o.claimedRole ?: "",
             lang = a.lang?.takeIf { it.isNotEmpty() } ?: o.lang?.takeIf { it.isNotEmpty() } ?: "mn",
             date = df.format(now) + " (+08)",
             url = Precheck.VERIFY_URL + docId + "/" + revIndex,
             exact = a.exact,
+            sig = a.signatureImage,
+            stamp = a.stampImage,
         )
     }
 
@@ -223,8 +240,9 @@ internal object Pades {
         try { Structure.check(doc) } catch (e: Structure.Failure) { throw EidPadesException.PdfInvalid("PDF structure nested too deep or too complex") }
         checkAppearance(PrepareOptions(signerCert = ByteArray(0), appearance = a))
         val verifyUri = if (Precheck.hasSignatures(doc)) Precheck.docIdFromPage(doc)?.let { Precheck.VERIFY_URL + it } ?: "" else ""
-        val w = Appearance.round100(a.width)
-        val h = Appearance.round100(a.height)
+        val (aw, ah) = a.size()
+        val w = Appearance.round100(aw)
+        val h = Appearance.round100(ah)
         val s = try {
             Appearance.suggest(doc, verifyUri, a.page, Appearance.round100(a.x), Appearance.round100(a.y), w, h, a.exact)
         } catch (e: AppearanceException) {
