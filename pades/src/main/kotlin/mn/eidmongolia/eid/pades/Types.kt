@@ -48,73 +48,16 @@ class PrepareOptions(
  *   preview): never moved off page content. [Placement.status] is then REQUESTED, or OVERLAP when content is under the
  *   rect (UNSCANNED when the page cannot be scanned) — never MOVED. false (default) = x/y is only the preferred spot
  *   (PLACEMENT_SPEC.md §6, §6a). The rect must lie inside the page (else REQUEST_INVALID).
- * @param width, height the whole widget rect — with [stampImage] the box plus the stamp's overflow above it. Both 0 →
- *   the default size (APPEARANCE_SPEC §6.3, PLACEMENT_SPEC §6c): 220 × 64, with [signatureImage] 220 × 110, with
- *   [stampImage] 240 × 147.5
- * @param signatureImage the signer's handwritten-signature image (CA signature-image) drawn inside the stamp
- *   (APPEARANCE_SPEC §6); null = none (byte-identical to golden v9)
- * @param stampImage the organization's stamp image (CA representations[].stampImage); only with
- *   [PrepareOptions.claimedRole] (onBehalfOf), else REQUEST_INVALID
  */
 class SignatureAppearance(
     val page: Int = 0,
     val x: Double,
     val y: Double,
-    val width: Double = 0.0,
-    val height: Double = 0.0,
+    val width: Double,
+    val height: Double,
     val lang: String? = null,
     val exact: Boolean = false,
-    val signatureImage: PdfImage? = null,
-    val stampImage: PdfImage? = null,
-) {
-    companion object {
-        /** Default sizes (pt) when width and height are both 0 (Go `pades.Default*Stamp*`, APPEARANCE_SPEC §6.3). */
-        const val DEFAULT_WIDTH = 220.0
-        const val DEFAULT_HEIGHT = 64.0
-        const val DEFAULT_SIGNATURE_WIDTH = 220.0
-        const val DEFAULT_SIGNATURE_HEIGHT = 110.0
-        const val DEFAULT_ORG_WIDTH = 240.0
-        const val DEFAULT_ORG_HEIGHT = 147.5
-    }
-
-    /** Go `appearanceSize`: (width, height), or the default for the images when both are 0. */
-    internal fun size(): Pair<Double, Double> = when {
-        width != 0.0 || height != 0.0 -> width to height
-        stampImage != null -> DEFAULT_ORG_WIDTH to DEFAULT_ORG_HEIGHT
-        signatureImage != null -> DEFAULT_SIGNATURE_WIDTH to DEFAULT_SIGNATURE_HEIGHT
-        else -> DEFAULT_WIDTH to DEFAULT_HEIGHT
-    }
-}
-
-/**
- * A "PDF image" as the CA serves it (Go `pades.PDFImage`, APPEARANCE_SPEC §6.1): one ink colour + an 8-bit alpha channel.
- * [alpha] is written into the PDF verbatim (/SMask, /FlateDecode) — nothing is compressed at runtime.
- *
- * @param width, height px, 1…1600
- * @param color [r, g, b], 0…255 each
- * @param alpha zlib stream (RFC 1950, nothing after the Adler-32) inflating to exactly width·height bytes, rows
- *   top-down, no PNG filter bytes; ≤ 300 KiB (CA JSON: base64-decoded `alpha`)
- * @param sha256 lowercase hex SHA-256 of the PNG the CA stores; not written into the PDF, carried to the registration
- *   ([Completed.images] → `images`)
- */
-class PdfImage(
-    val width: Int,
-    val height: Int,
-    val color: IntArray,
-    val alpha: ByteArray,
-    val sha256: String,
 )
-
-/** [SignatureImage.kind]; [wire] = the CA/Go string. */
-enum class SignatureImageKind(val wire: String) {
-    /** The citizen's handwritten-signature image. */
-    SIGNATURE("signature"),
-    /** The organization's stamp image. */
-    STAMP("stamp"),
-}
-
-/** One image drawn in a signature's stamp (Go `eid.PDFSignatureImage`): registration `images` row. */
-data class SignatureImage(val kind: SignatureImageKind, val sha256: String)
 
 /**
  * [EidPades.prepare] output.
@@ -229,8 +172,6 @@ class Completed(
     val priorRevisionSha256: List<String>,
     val fileName: String? = null,
     val claimedRole: String? = null,
-    /** Images drawn in this signature's stamp (signatureImage, then stampImage — those given); sent as `images`. */
-    val images: List<SignatureImage> = emptyList(),
 ) {
     /**
      * The CA registration body for this signature (Go `pades.Registration`). Prior signatures go as `priorCmsSha256`
@@ -266,7 +207,7 @@ class Completed(
             cms = Base64Std.encode(cms), fileName = name, inSha256 = inSha256,
             pageSha256 = if (revIndex == 1) pageSha256 else null, sigRevSha256 = sigRevSha256, outSha256 = outSha256,
             priorCmsSha256 = priorCmsSha256.takeIf { it.isNotEmpty() },
-            onBehalfOf = obo, signerEtsi = etsi, images = images.takeIf { it.isNotEmpty() },
+            onBehalfOf = obo, signerEtsi = etsi,
             priorSignatures = if (priorRevisionSha256.size == priorCmsSha256.size) {
                 priorCmsSha256.zip(priorRevisionSha256) { c, r -> PriorSignature(c, r) }
             } else {
@@ -310,8 +251,6 @@ data class Registration(
     val onBehalfOf: String?,
     val signerEtsi: String?,
     val priorSignatures: List<PriorSignature> = emptyList(),
-    /** APPEARANCE_SPEC §6.6: each image in the stamp as {kind, sha256}; null/empty = not sent. */
-    val images: List<SignatureImage>? = null,
 ) {
     /** JSON object; null / absent optional fields are omitted (Go `omitempty`). */
     fun toJson(): String {
@@ -346,19 +285,6 @@ data class Registration(
         list("priorRevisionSha256", priorRevisionSha256)
         str("onBehalfOf", onBehalfOf)
         str("signerEtsi", signerEtsi)
-        if (!images.isNullOrEmpty()) {
-            key("images")
-            sb.append('[')
-            images.forEachIndexed { i, im ->
-                if (i > 0) sb.append(',')
-                sb.append("{\"kind\":")
-                jsonString(sb, im.kind.wire)
-                sb.append(",\"sha256\":")
-                jsonString(sb, im.sha256)
-                sb.append('}')
-            }
-            sb.append(']')
-        }
         return sb.append('}').toString()
     }
 

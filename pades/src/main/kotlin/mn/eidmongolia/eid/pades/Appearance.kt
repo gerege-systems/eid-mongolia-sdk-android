@@ -19,95 +19,10 @@ internal object Appearance {
         val url: String,
         /** PLACEMENT_SPEC §6a: never move the stamp; the scan only reports OVERLAP. */
         val exact: Boolean = false,
-        /** APPEARANCE_SPEC §6: signature / organization-stamp images (null = none); [w], [h] then cover the stamp's overflow. */
-        val sig: PdfImage? = null,
-        val stamp: PdfImage? = null,
     )
 
     /** Form XObject input: displayed (post-rotation) width/height in h100, page /Rotate 0|90|180|270. */
-    class Params(
-        val w: Int, val h: Int, val rotate: Int, val name: String, val role: String, val lang: String, val date: String, val url: String,
-        /** APPEARANCE_SPEC §6 (null = none; both null = the §3 layout, byte-identical to golden v9). */
-        val sig: PdfImage? = null,
-        val stamp: PdfImage? = null,
-    )
-
-    /** PDF image limits (APPEARANCE_SPEC §6.1). */
-    const val MAX_IMAGE_SIDE = 1600
-    const val MAX_IMAGE_ALPHA_BYTES = 300 shl 10
-
-    /**
-     * Go `core.CheckPDFImage` (APPEARANCE_SPEC §6.1): 1 ≤ w, h ≤ 1600; colour 0–255; 1 ≤ alpha ≤ 300 KiB; alpha is one zlib
-     * stream (Adler-32 verified, nothing after it) inflating to exactly w·h bytes. No preset dictionary: the FDICT bit
-     * is rejected even with DICTID 1 (which `java.util.zip.Inflater` and Go `compress/zlib` would accept).
-     */
-    fun checkImage(im: PdfImage) {
-        fun bad(msg: String) = AppearanceException("image: $msg")
-        if (im.width < 1 || im.height < 1 || im.width > MAX_IMAGE_SIDE || im.height > MAX_IMAGE_SIDE) throw bad("size 1…1600 px")
-        if (im.color.size != 3 || im.color.any { it < 0 || it > 255 }) throw bad("colour 0…255")
-        if (im.alpha.isEmpty() || im.alpha.size > MAX_IMAGE_ALPHA_BYTES) throw bad("alpha 1 B…300 KiB")
-        if (im.alpha.size >= 2 && im.alpha[1].toInt() and 0x20 != 0) throw bad("alpha preset dictionary (FDICT)")
-        val want = im.width.toLong() * im.height
-        val inf = java.util.zip.Inflater()
-        try {
-            inf.setInput(im.alpha)
-            val buf = ByteArray(64 shl 10)
-            var n = 0L
-            while (!inf.finished()) {
-                val k = inf.inflate(buf)
-                if (k == 0 && inf.needsInput()) throw bad("alpha is not exactly width×height bytes (or damaged)")
-                n += k
-                if (n > want) throw bad("alpha is not exactly width×height bytes (or damaged)")
-            }
-            if (n != want || inf.remaining != 0) throw bad("alpha is not exactly width×height bytes (or damaged)")
-        } catch (e: java.util.zip.DataFormatException) {
-            throw bad("alpha is not zlib")
-        } finally {
-            inf.end()
-        }
-    }
-
-    /** §6.3 geometry (h100): border box height, QR/text row height, image placements [dx dy dw dh] (null = none). */
-    private class ImageLayout(val boxH: Int, val rowH: Int, val sig: IntArray?, val stamp: IntArray?)
-
-    /** Go apFit: fit-contain iw × ih px into bw × bh (h100), 64-bit products, the scaled side ≥ 1. */
-    private fun fit(iw: Int, ih: Int, bw: Int, bh: Int): Pair<Int, Int> =
-        if (iw.toLong() * bh >= ih.toLong() * bw) bw to maxOf(1L, bw.toLong() * ih / iw).toInt()
-        else maxOf(1L, bh.toLong() * iw / ih).toInt() to bh
-
-    private fun layoutImages(p: Params): ImageLayout {
-        if (p.sig == null && p.stamp == null) return ImageLayout(p.h, p.h, null, null)
-        val small = AppearanceException("too small (appearance with images)")
-        val boxH = if (p.stamp != null) p.h * 4 / 5 else p.h
-        val band = boxH * 9 / 22
-        val rowH = boxH - band
-        val sh = band * 14 / 15
-        val sy = rowH - band * 2 / 15
-        var sx = (p.w - p.w * 15 / 22) / 2
-        var sw = p.w * 15 / 22
-        var stamp: IntArray? = null
-        if (p.stamp != null) {
-            val d = boxH * 2 / 3
-            val qx = minOf(p.w * 41 / 60 - d / 2, p.w - d)
-            if (qx < 0 || d <= 0) throw small
-            val (dw, dh) = fit(p.stamp.width, p.stamp.height, d, d)
-            stamp = intArrayOf(qx + (d - dw) / 2, p.h - d + (d - dh) / 2, dw, dh)
-            sx = p.w / 30
-            sw = qx + d / 2 - sx
-        }
-        var sig: IntArray? = null
-        if (p.sig != null) {
-            if (sw <= 0 || sh <= 0) throw small
-            val (dw, dh) = fit(p.sig.width, p.sig.height, sw, sh)
-            val dx = if (p.stamp == null) sx + (sw - dw) / 2 else sx
-            sig = intArrayOf(dx, sy + (sh - dh) / 2, dw, dh)
-        }
-        return ImageLayout(boxH, rowH, sig, stamp)
-    }
-
-    /** `q dw 0 0 dh dx dy cm /<name> Do Q` (APPEARANCE_SPEC §6.4). */
-    private fun drawImage(w: VerifyPage.Writer, name: String, r: IntArray) =
-        w.op("q ${num100(r[2])} 0 0 ${num100(r[3])} ${num100(r[0])} ${num100(r[1])} cm /$name Do Q")
+    class Params(val w: Int, val h: Int, val rotate: Int, val name: String, val role: String, val lang: String, val date: String, val url: String)
 
     private const val PAD = 400
     private const val GAP = 400
@@ -158,18 +73,13 @@ internal object Appearance {
         val label = labels[p.lang] ?: throw AppearanceException("language ${p.lang}")
         if (!VerifyPage.asciiUrl(p.url)) throw AppearanceException("URL is not ASCII")
         if (p.w <= 0 || p.h <= 0 || p.w > MAX_SIDE || p.h > MAX_SIDE) throw AppearanceException("size")
-        if (p.stamp != null && p.role.isEmpty()) throw AppearanceException("stamp image only on behalf of an organization (claimedRole)")
-        p.sig?.let(::checkImage)
-        p.stamp?.let(::checkImage)
-        val il = layoutImages(p)
-        val rowH = il.rowH
         val m = try {
             Qr.encode(p.url.toByteArray(Charsets.US_ASCII))
         } catch (e: Exception) {
             throw AppearanceException(e.message ?: "QR")
         }
         val n = m.size
-        val mod = (rowH - 2 * PAD) / n
+        val mod = (p.h - 2 * PAD) / n
         if (mod < MIN_MODULE) throw AppearanceException("too small (height ≥ ${num100(2 * PAD + n * MIN_MODULE)} pt)")
         val tx = PAD + mod * n + GAP
         val tw = p.w - tx - PAD
@@ -177,7 +87,7 @@ internal object Appearance {
         var lines: List<Line>? = null
         var f = MAX_SIZE
         while (f >= MIN_SIZE && lines == null && tw > 0) {
-            lines = layout(w, p, label, f, tw, rowH)
+            lines = layout(w, p, label, f, tw)
             f--
         }
         if (lines == null) throw AppearanceException("too small (text does not fit)")
@@ -190,13 +100,8 @@ internal object Appearance {
         }
         w.op("${VerifyPage.OK} RG")
         w.op("1 w")
-        w.op("0.5 0.5 ${num100(p.w - 100)} ${num100(il.boxH - 100)} re S")
-        if (p.sig != null || p.stamp != null) {
-            w.op("0.5 w")
-            w.op("0 ${num100(rowH)} m ${num100(p.w)} ${num100(rowH)} l S")
-        }
-        il.sig?.let { drawImage(w, "Sig", it) }
-        w.op("q ${num100(mod)} 0 0 ${num100(mod)} ${num100(PAD)} ${num100((rowH - mod * n) / 2)} cm")
+        w.op("0.5 0.5 ${num100(p.w - 100)} ${num100(p.h - 100)} re S")
+        w.op("q ${num100(mod)} 0 0 ${num100(mod)} ${num100(PAD)} ${num100((p.h - mod * n) / 2)} cm")
         w.op("0 0 0 rg")
         for (r in 0 until n) {
             var c = 0
@@ -209,19 +114,18 @@ internal object Appearance {
         }
         w.op("f")
         w.op("Q")
-        var cursor = rowH - PAD - (rowH - 2 * PAD - total) / 2
+        var cursor = p.h - PAD - (p.h - 2 * PAD - total) / 2
         for (l in lines) {
             cursor -= l.size * LEADING
             w.op("${l.color} rg")
             w.op("BT /F${l.font} ${l.size} Tf ${num100(tx)} ${num100(cursor + l.size * DESCENT)} Td ${w.glyphHex(l.font, l.text)} Tj ET")
         }
-        il.stamp?.let { drawImage(w, "Stamp", it) }
         if (cm.isNotEmpty()) w.op("Q")
         w.op("EMC")
         return w.ops.toString().toByteArray(Charsets.ISO_8859_1)
     }
 
-    private fun layout(w: VerifyPage.Writer, p: Params, label: String, f: Int, tw: Int, rowH: Int): List<Line>? {
+    private fun layout(w: VerifyPage.Writer, p: Params, label: String, f: Int, tw: Int): List<Line>? {
         val b = f - BODY_DELTA
         val limit = tw * 10
         val lines = ArrayList<Line>()
@@ -234,49 +138,20 @@ internal object Appearance {
             if (l.text.isEmpty() || w.width1000(l.font, l.size, l.text) > limit) return null
             total += l.size * LEADING
         }
-        if (total > rowH - 2 * PAD) return null
+        if (total > p.h - 2 * PAD) return null
         return lines
     }
 
-    /** Number of objects [objects] writes: 11 (form, F1 ×5, F2 ×5) + 2 per image (Go AppearanceObjectCount). */
-    fun objectCount(sig: PdfImage?, stamp: PdfImage?): Int = 11 + (if (sig != null) 2 else 0) + (if (stamp != null) 2 else 0)
-
-    /**
-     * /AP /N form XObject, its 2 fonts and 2 objects per image (APPEARANCE_SPEC §6.2): ids = [form, F1 ×5, F2 ×5,
-     * (Sig base, Sig mask), (Stamp base, Stamp mask)]; returns the bodies in that order. The alpha is written verbatim.
-     */
+    /** /AP /N form XObject and its 2 fonts (11 objects): ids = [form, F1 ×5, F2 ×5]; returns the bodies in that order. */
     fun objects(p: Params, ids: IntArray): List<ByteArray> {
-        if (ids.size != objectCount(p.sig, p.stamp)) throw AppearanceException("object count")
         val rot = rotation(p.rotate, p.w, p.h)
         val content = content(p)
-        val res = StringBuilder("/Font << /F1 ${ids[1]} 0 R /F2 ${ids[6]} 0 R >>")
-        val imgs = ArrayList<ByteArray>()
-        if (p.sig != null || p.stamp != null) {
-            res.append(" /XObject <<")
-            var next = 11
-            for ((name, im) in listOf("Sig" to p.sig, "Stamp" to p.stamp)) {
-                if (im == null) continue
-                val base = ids[next]
-                val mask = ids[next + 1]
-                next += 2
-                res.append(" /$name $base 0 R")
-                imgs += VerifyPage.streamObj(
-                    " /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask $mask 0 R",
-                    byteArrayOf(im.color[0].toByte(), im.color[1].toByte(), im.color[2].toByte()),
-                )
-                imgs += VerifyPage.streamObj(
-                    " /Type /XObject /Subtype /Image /Width ${im.width} /Height ${im.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode",
-                    im.alpha,
-                )
-            }
-            res.append(" >>")
-        }
         val form = VerifyPage.streamObj(
-            " /Type /XObject /Subtype /Form /BBox [0 0 ${num100(rot.bw)} ${num100(rot.bh)}] /Resources << $res >>",
+            " /Type /XObject /Subtype /Form /BBox [0 0 ${num100(rot.bw)} ${num100(rot.bh)}] /Resources << /Font << /F1 ${ids[1]} 0 R /F2 ${ids[6]} 0 R >> >>",
             content,
         )
         return listOf(form) + VerifyPage.fontBodies(ids.copyOfRange(1, 6), PageFont.regular) +
-            VerifyPage.fontBodies(ids.copyOfRange(6, 11), PageFont.bold) + imgs
+            VerifyPage.fontBodies(ids.copyOfRange(6, 11), PageFont.bold)
     }
 
     /** Visible signature field/widget body (APPEARANCE_SPEC.md §2); [rect] in user space (h100). */

@@ -25,7 +25,7 @@ internal object SignatureRevision {
     /**
      * Approval signature revision: Sig dict + placeholder, widget, new Catalog/AcroForm. Without [vis] the widget is
      * invisible on the first page; with [vis] (APPEARANCE_SPEC.md) it has a /Rect on page [Appearance.Visible.page], /F 4
-     * and an /AP /N form XObject (+ 2 fonts, + 2 objects per image), appended to that page's /Annots. [Appearance.Visible.name] must equal the
+     * and an /AP /N form XObject (+ 2 fonts), appended to that page's /Annots. [Appearance.Visible.name] must equal the
      * written /Name, else [AppearanceException].
      */
     fun prepare(base: ByteArray, signingTime: Date, signerName: String, reason: String?, vis: Appearance.Visible? = null): Prepared {
@@ -50,8 +50,7 @@ internal object SignatureRevision {
         val sigId = inc.reserve()
         val fieldId = inc.reserve()
         val catId = inc.reserve()
-        // form, F1 ×5, F2 ×5, 2 per image (APPEARANCE_SPEC §6.2)
-        val apIds = if (vis != null) IntArray(Appearance.objectCount(vis.sig, vis.stamp)) { inc.reserve() } else IntArray(0)
+        val apIds = if (vis != null) IntArray(11) { inc.reserve() } else IntArray(0) // form, F1 ×5, F2 ×5
 
         // ── Sig dict (placeholder) ──
         val sig = StringBuilder("<<\n /Type /Sig\n /Filter /Adobe.PPKLite\n /SubFilter /$SUB_FILTER\n /ByteRange ")
@@ -82,7 +81,7 @@ internal object SignatureRevision {
             page = loc.page
             placement = loc.result
             val bodies = Appearance.objects(
-                Appearance.Params(vis.w.toInt(), vis.h.toInt(), loc.rot, vis.name, vis.role, vis.lang, vis.date, vis.url, vis.sig, vis.stamp), apIds,
+                Appearance.Params(vis.w.toInt(), vis.h.toInt(), loc.rot, vis.name, vis.role, vis.lang, vis.date, vis.url), apIds,
             )
             inc.writeObject(fieldId, Appearance.widget(fieldName, loc.rect, page.second, sigId, apIds[0]))
             bodies.forEachIndexed { i, b -> inc.writeObject(apIds[i], b) }
