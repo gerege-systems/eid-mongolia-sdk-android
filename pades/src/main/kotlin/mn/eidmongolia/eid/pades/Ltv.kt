@@ -1,6 +1,7 @@
 package mn.eidmongolia.eid.pades
 
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.math.BigInteger
 import java.security.MessageDigest
 import java.util.Date
@@ -22,6 +23,12 @@ internal class CertificateRevoked(val ref: String) : IOException("certificate re
 /**
  * B-LT collection — Go reference `pades/ltv.go`: OCSP (SHA-1 CertID) and CRL (CDP) per chain certificate, checked for
  * signature/issuer, CertID, freshness ([Revocation.freshAt] at the current time); fail-closed; revoked → [CertificateRevoked].
+ *
+ * Order by certificate role: the first certificate of each chain (end entity — signer, TSA) asks its OCSP first (full
+ * timeout, freshness/retry rule) and then its CRL, as before. A CA certificate (every later position) fetches its CRL
+ * first and sends no OCSP request at all when a valid CRL is obtained; only without one does it fall back to its OCSP
+ * (full timeout). A CA OCSP responder that accepts the connection and never answers then no longer stalls signing. An
+ * interrupted caller gets [InterruptedIOException] (interrupt flag kept) instead of a missing-revocation error.
  */
 internal object Ltv {
     class NotFresh(msg: String) : IOException(msg)
@@ -68,33 +75,50 @@ internal object Ltv {
                 var ok = false
                 var freshErr: NotFresh? = null
                 val fresh = if (i == 0) after else null
-                for (u in c.ocspServers) {
-                    try {
-                        val (der, resp) = fetchOcsp(f, u, c, issuer, now, fresh)
-                        add(d.ocsps, der)
-                        resp.certificate?.let { if (it != issuer) add(d.certs, it.raw) } // delegated responder
-                        ok = true
-                        break
-                    } catch (e: CertificateRevoked) {
-                        throw e
-                    } catch (e: NotFresh) {
-                        freshErr = e
-                    } catch (_: Exception) {
+                fun ocsp() {
+                    for (u in c.ocspServers) {
+                        try {
+                            val (der, resp) = fetchOcsp(f, u, c, issuer, now, fresh)
+                            add(d.ocsps, der)
+                            resp.certificate?.let { if (it != issuer) add(d.certs, it.raw) } // delegated responder
+                            ok = true
+                            break
+                        } catch (e: CertificateRevoked) {
+                            throw e
+                        } catch (e: NotFresh) {
+                            freshErr = e
+                        } catch (_: Exception) {
+                        }
                     }
                 }
-                for (u in c.crlDistributionPoints) {
-                    val der = try { f.get(u) } catch (_: Exception) { continue }
-                    if (Crl.covers(der, c, issuer, now)) {
-                        add(d.crls, der)
-                        ok = true
+                fun crls() {
+                    for (u in c.crlDistributionPoints) {
+                        val der = try { f.get(u) } catch (_: Exception) { continue }
+                        if (Crl.covers(der, c, issuer, now)) {
+                            add(d.crls, der)
+                            ok = true
+                        }
                     }
                 }
+                if (i == 0) {
+                    // End entity (signer / TSA leaf): OCSP first, full timeout, then the CRL — unchanged.
+                    ocsp()
+                    crls()
+                } else {
+                    // CA certificate: CRL first; no OCSP request at all when a valid CRL is obtained.
+                    crls()
+                    if (!ok) ocsp()
+                }
+                // An interrupted caller (DefaultHttp keeps the flag set) ends here, flag kept, instead of reading as
+                // missing revocation data.
+                if (Thread.currentThread().isInterrupted) throw InterruptedIOException("LTV collection interrupted")
+                val stale = freshErr
                 if (!ok) {
-                    freshErr?.let { throw NotFresh("${it.message}: ${c.serialRef}") }
+                    stale?.let { throw NotFresh("${it.message}: ${c.serialRef}") }
                     throw Incomplete("no valid OCSP/CRL for ${c.serialRef}")
                 }
-                if (i == 0 && after != null && freshErr != null && c.ocspServers.isNotEmpty() && !hasFreshOcsp(d.ocsps, c, issuer, after)) {
-                    throw NotFresh("${freshErr.message}: ${c.serialRef}")
+                if (i == 0 && after != null && stale != null && c.ocspServers.isNotEmpty() && !hasFreshOcsp(d.ocsps, c, issuer, after)) {
+                    throw NotFresh("${stale.message}: ${c.serialRef}")
                 }
             }
         }
