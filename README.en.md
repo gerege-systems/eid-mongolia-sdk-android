@@ -37,20 +37,20 @@ Version: use the latest tag ([releases](https://github.com/gerege-systems/eid-mo
 ```kotlin
 import mn.eidmongolia.eid.pades.*
 
-// 1) Сүлжээгүй: PDF-ийг бэлдэж DTBS гаргана
-// verifyPage = true бол fileName заавал (эс бөгөөс REQUEST_INVALID); эхний eID гарын үсгийг CA зөвхөн хуудастай бүртгэнэ
-val prepared = EidPades.prepare(pdf, PrepareOptions(signerCert = signCertDer, verifyPage = true, fileName = "Гэрээ №1.pdf"))
-// prepared.state-ийг хадгалж болно; prepared.dtbs-ийг (32 байт) утас/токеноор гарын үсэглүүлнэ
+// 1) No network: prepare the PDF and produce the DTBS
+// with verifyPage = true, fileName is required (otherwise REQUEST_INVALID); the CA registers the first eID signature only together with its page
+val prepared = EidPades.prepare(pdf, PrepareOptions(signerCert = signCertDer, verifyPage = true, fileName = "Contract No. 1.pdf"))
+// prepared.state can be stored; have prepared.dtbs (32 bytes) signed by the phone/token
 
-// 2) TSA + OCSP/CRL + DSS (suspend — IO dispatcher дээр ажиллана)
+// 2) TSA + OCSP/CRL + DSS (suspend — runs on the IO dispatcher)
 val done = EidPades.complete(prepared.state, signature)
 // done.pdf, done.cms, done.docId, done.outSha256, done.inSha256, done.hasPage, done.pageSha256,
 // done.revIndex, done.sigRevSha256, done.priorCmsSha256, done.priorRevisionSha256, done.signerCert, done.fileName,
 // done.claimedRole
 val body = done.registration(Medium.PHONE, sessionId = sessionId).toJson()
-// medium-ийг орхивол sessionId-аас: байвал Medium.PHONE, үгүй бол Medium.TOKEN (CA-ийн хос). Medium.PHONE + sessionId-гүй,
-// Medium.TOKEN + sessionId, эсвэл claimedRole-той prepare + onBehalfOf-гүй → REQUEST_INVALID (CA руу явахгүй).
-// → RP backend нь body-г eID-д ЯГ ХЭВЭЭР бүртгэнэ (POST /pdf/signatures)
+// if medium is omitted it is derived from sessionId: Medium.PHONE if present, otherwise Medium.TOKEN (the CA's pairing). Medium.PHONE without sessionId,
+// Medium.TOKEN with sessionId, or a prepare with claimedRole but no onBehalfOf → REQUEST_INVALID (never sent to the CA).
+// → the RP backend registers the body with eID AS IS (POST /pdf/signatures)
 ```
 
 - `prepare`: preliminary checks (encryption, DocMDP P=1, earlier signatures, ≤ 16); for the first eID signature, with
@@ -100,8 +100,8 @@ Integration documentation: <https://developer.eidmongolia.mn>.
 fixed TSA/OCSP/CRL responses); private keys removed. The source tag is in `golden/SOURCE`.
 
 ```sh
-scripts/sync-pades-golden.sh --check     # vendored = Go репогийн tag
-./gradlew :pades:testDebugUnitTest       # JVM, төхөөрөмж шаардахгүй
+scripts/sync-pades-golden.sh --check     # vendored = the Go repo's tag
+./gradlew :pades:testDebugUnitTest       # JVM, no device required
 ```
 
 ## Source and contributions
