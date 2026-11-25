@@ -1,3 +1,5 @@
+Монгол · [English](README.en.md) · [中文](README.zh-CN.md)
+
 # eID Mongolia — PAdES SDK (Android)
 
 `mn.eidmongolia.eid.pades` — eID Mongolia-ийн **client-side PAdES** (PDF гарын үсэг) Kotlin сан. PDF хэзээ ч eID
@@ -112,14 +114,4 @@ GitHub Issues-д бичнэ үү; PR-ийг дотоод репод шилжүү
 MIT — [LICENSE](LICENSE). Фонт: SIL Open Font License 1.1
 (`pades/src/main/resources/mn/eidmongolia/eid/pades/fonts/OFL.txt`).
 
----
-
-### English
-
-Client-side PAdES signing for eID Mongolia (Kotlin, Android minSdk 24). The PDF never leaves the device: `prepare`
-returns a 32-byte DTBS to be signed by the citizen's phone or USB token; `complete` embeds the signature with an
-RFC 3161 timestamp, OCSP/CRL and DSS (PAdES B-LT). Output is byte-identical to the Go reference
-(`gerege-systems/eid-mongolia-sdk-go`, profile `pades-client/1`), enforced by golden vectors in CI. Install from
-JitPack: add `maven("https://jitpack.io")` and
-`implementation("com.github.gerege-systems:eid-mongolia-sdk-android:0.10.1")` (use the latest tag). This repository is a read-only mirror;
-please file issues here.
+English: [README.en.md](README.en.md) · 中文: [README.zh-CN.md](README.zh-CN.md)
